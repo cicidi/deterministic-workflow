@@ -9,6 +9,7 @@
 | 2026-06-16 | 0.1.0 | Initial design: transitions as source of truth, LangGraph as infra layer |
 | 2026-06-16 | 0.2.0 | Add state metadata (precondition, postcondition, guards, invariants) |
 | 2026-06-16 | 0.3.0 | Add invoice and payment use cases; full English translation |
+| 2026-06-16 | 0.4.0 | Add Section 8: Intent + State resolution (per-state intent policy, confirmation flow) |
 
 ---
 
@@ -421,6 +422,115 @@ User:   "Yes, purchase"
 | Two state machines conflicting | transitions is the single authority on state; LangGraph is a pure execution engine |
 | Too complex | Developer only faces YAML + action functions; generator hides LangGraph details |
 | Generator hard to maintain | Generator is itself a deterministic component (YAML in -> graph out), unit-testable |
+
+---
+
+## 8. Intent + State Resolution
+
+### 8.1 Principle
+
+Intent classification (Layer 1) and the state machine (Layer 2) are not independent. An intent has different meanings depending on the current state. The combination of **(intent, current_state)** determines whether a transition is valid, requires confirmation, or is rejected.
+
+### 8.2 Per-State Intent Policy
+
+Each state declares which intents it accepts and how to handle unaccepted intents:
+
+```yaml
+states:
+  - name: collect_info
+    intent_policy:
+      accept:
+        - provide_information    # user gives data → continue form
+        - ask_question           # user asks about coverage → answer within flow
+        - decline                # user wants to cancel → confirm then exit
+      on_unlisted: ask_confirm   # unrecognized intent → ask user to confirm
+```
+
+**Policy behaviors:**
+
+| Behavior | Description |
+|----------|-------------|
+| `accept` | Intent is valid in this state; proceed with transition |
+| `on_unlisted: ask_confirm` | Unlisted intent triggers confirmation: "You're in the middle of [current task]. Do you want to cancel and [new intent]?" |
+| `on_unlisted: reject` | Unlisted intent is silently blocked; agent prompts user to continue current task |
+
+### 8.3 Resolution Flow
+
+```
+User utterance
+      │
+      ▼
+┌─────────────────┐
+│ Layer 1: Intent  │
+│ Classification   │ → intent: make_payment, confidence: 0.92
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│ Layer 2: Check   │
+│ intent vs state  │
+│                  │
+│ state=filling_form
+│ intent_policy:   │
+│   accept:        │
+│     - provide_information
+│     - ask_question
+│     - decline
+│   on_unlisted: ask_confirm
+│                  │
+│ make_payment ∉ accept
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│ ask_confirm:     │
+│ "You're filling  │
+│  a quote form.   │
+│  Cancel and pay?"│
+└────────┬────────┘
+         ▼
+    user responds
+         │
+    ┌────┴────┐
+    ▼         ▼
+  "yes"     "no"
+    │         │
+    ▼         ▼
+  state     stay in
+  → idle   filling_form
+  intent    (re-classify
+  → make_   next input)
+  payment
+```
+
+### 8.4 Examples
+
+**Example 1: Allowed transition**
+```
+state: filling_form, intent: decline
+→ accept list includes decline → transition to idle
+→ follow-up: "What would you like to do instead?"
+```
+
+**Example 2: Unlisted — ask confirm**
+```
+state: filling_form, intent: make_payment
+→ make_payment not in accept list, on_unlisted = ask_confirm
+→ agent: "You're filling a quote form. Cancel and start a payment instead?"
+→ user confirms → state → idle, intent → make_payment
+→ user declines → stay in filling_form, re-process next input
+```
+
+**Example 3: Invalid combo — reject**
+```
+state: confirm_purchase, intent: ask_question
+→ accept list: [confirm, decline], on_unlisted = reject
+→ agent: "Please confirm or decline the purchase first."
+→ stay in confirm_purchase
+```
+
+### 8.5 Relationship to Other State Machine Concerns
+
+- **Retry counters** are independent of intent resolution. A user who triggers `ask_confirm` does not consume a retry attempt — only invalid data inputs (wrong name, wrong code) increment retries.
+- **Sensitive field scrubbing** happens on state exit regardless of whether the exit was triggered by a normal transition, a `decline`, or a confirmed intent switch.
 
 ---
 
