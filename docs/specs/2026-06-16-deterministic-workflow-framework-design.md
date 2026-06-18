@@ -190,7 +190,7 @@ Detailed permission design in [Routing & Execution Layer](./2026-06-17-routing-e
 ## 5. Related Design Documents
 
 - **[State Machine Design](./2026-06-16-state-machine-design.md)** — Detailed FSM layer design: transitions + LangGraph fusion, state metadata (preconditions, guards, invariants), intent+state resolution, and FSM-specific open questions.
-- **[Intent Classification Design](./2026-06-16-intent-classification-design.md)** — Layer 1 intent classification strategy: LLM-first + keyword fallback, output contract, conversation context.
+- **[Intent Classification Design](./2026-06-16-intent-classification-design.md)** — Layer 1 intent classification strategy: LLM-first, confidence threshold, 17 system intents, multi-intent detection.
 - **[Extraction Layer Design](./2026-06-17-extraction-layer-design.md)** — Layer 1 entity extraction: Extract/Validate/Transform pipeline with multiple implementation options.
 - **[Domain Model Design](./2026-06-17-domain-model-design.md)** — Single source of truth: Entity + State + Transition schemas, cross-workflow reuse.
 - **[Routing & Execution Layer Design](./2026-06-17-routing-execution-layer-design.md)** — Layer 2 routing and execution: business logic, decision nodes, phase-aware routing, retry budgets, sub-workflow reuse, permission model.

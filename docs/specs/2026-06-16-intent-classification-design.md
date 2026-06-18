@@ -13,6 +13,7 @@
 | 2026-06-16 | 0.1.0 | Initial intent classification spec |
 | 2026-06-16 | 0.2.0 | Extract custom intent examples to examples/; fix section numbering |
 | 2026-06-17 | 0.3.0 | Add implementation options comparison, YAML schema, open questions, errorNode cross-reference, agentState.phase mention |
+| 2026-06-18 | 0.6.0 | Remove keyword fallback entirely: delete §3.4 (Keyword Matching) + §3.6 (Merge Strategy); simplify to LLM-only flow with `unrecognized_intent` as the sole fallback; remove `"keyword"` from `ClassifiedIntent.source` enum; keywords kept in IntentDef as metadata only |
 | 2026-06-18 | 0.5.1 | Simplify §2.4: remove Options A/B/C comparison table; keep only LLM + keyword fallback as the single strategy |
 | 2026-06-18 | 0.5.0 | Expand system intents from 8 to 17: remove `resume_conversation` (demoted to system state, not user intent); add `help`, `correction`, `chitchat`, `out_of_scope`, `repeat`, `escalate`, `restart`, `complaint`, `pause`, `ambiguous_request`; add keyword + example YAML definitions for all system intents; expand §5.2 payload mapping to all 17 system intents |
 | 2026-06-18 | 0.4.0 | IntentDef adds `complex` field; multi-intent detection implemented (single user message → multiple intents); intent combination validation rules; intent→payload mapping table |
@@ -55,7 +56,7 @@ All 17 system intents below are available to every workflow. They cover conversa
 
 #### System Intent Keywords & Examples
 
-The framework's keyword fallback (see §3.4) relies on these definitions. Each system intent includes a `keywords` list for deterministic matching and `examples` for LLM few-shot prompting.
+Each system intent includes `keywords` for documentation and `examples` for LLM few-shot prompting. Keywords are not used in runtime classification.
 
 ```yaml
 # SYSTEM INTENTS — built into the framework
@@ -198,7 +199,7 @@ system_intents:
       - "Let me talk to a real person"
 ```
 
-> **Meta-intents without keywords** (`unrecognized_intent`, `ambiguous_request`, `out_of_scope`) are produced by the classifier, not by keyword matching. They rely entirely on LLM classification and capability registry lookup. See §3 for classification flow.
+> **Meta-intents** (`unrecognized_intent`, `ambiguous_request`, `out_of_scope`) are produced by the classifier, not by pattern matching. They rely entirely on LLM classification and capability registry lookup. See §3 for classification flow.
 
 ### 2.2 Custom Intents (per-workflow)
 
@@ -211,7 +212,7 @@ Each workflow can define additional domain-specific intents. For a complete cata
 #   name:        string      # unique identifier
 #   description: string      # guides LLM classification
 #   complex:     boolean     # true = multi-turn task; cannot combine with other complex intents
-#   keywords:    string[]    # deterministic fallback patterns
+#   keywords:    string[]    # metadata only (not used in runtime classification)
 #   examples:    string[]    # few-shot examples for LLM prompt
 
 intents:
@@ -244,20 +245,18 @@ intents:
 
 ### 2.4 Classification Strategy
 
-The framework uses **LLM-first classification with keyword fallback** as a deterministic safety net. This is the only supported strategy — there is no fallback to simpler mechanisms.
+The framework uses **LLM-first classification**. No keyword fallback — if the LLM cannot classify with sufficient confidence, the framework asks the user to clarify.
 
 | Dimension | Behavior |
 |-----------|----------|
 | **Primary** | LLM classifies the user utterance with conversation context and intent definitions |
-| **Fallback** | Keyword matching on intent `keywords` list (case-insensitive, confidence=1.0) |
-| **Merge** | LLM result wins if confidence ≥ threshold; otherwise keyword result wins |
-| **Neither** | Returns `unrecognized_intent` → routes to clarification node |
-| **Confidence Threshold** | Configurable, default `0.7` |
+| **Confidence Threshold** | Configurable, default `0.7`. Below threshold → `unrecognized_intent` → clarification |
+| **LLM Failure** | Gateway retries within budget. Exhausted → `unrecognized_intent` → clarification |
 | **Temperature** | 0 (deterministic output) |
 
 The full classification flow is specified in §3.
 
-## 3. Classification Strategy: LLM-First + Keyword Fallback
+## 3. Classification Strategy: LLM-First
 
 > **All LLM output is JSON.** The framework enforces schema validation, field presence, and type coercion on every classification result via output guardrails (see HLD Section 4.3). If JSON is malformed, the guardrail auto-retries within the retry budget.
 
@@ -292,34 +291,17 @@ The framework builds a system prompt from the user's intent definitions and conv
 
 Temperature is set to 0 for deterministic classification.
 
-### 3.4 Fallback: Keyword Matching
-
-If the LLM call fails or returns `confidence < threshold`, the framework runs keyword matching against the user's input:
+### 3.4 Classification Flow
 
 ```
-For each intent:
-  if any keyword matches user_input (case-insensitive):
-    return that intent with confidence=1.0
+1. Build LLM prompt (context + intents + examples)
+2. Call LLM Gateway (temperature=0, output_schema enforcement)
+3. If confidence ≥ threshold → return classified intents
+4. If confidence < threshold or LLM fails (retries exhausted) → return unrecognized_intent
+5. Route to Layer 3 for clarification response
 ```
 
-System intents have built-in keyword patterns. Custom intents use user-provided `keywords`.
-
-### 3.5 Confidence Threshold
-
-A configurable threshold (default `0.7`). When the LLM returns `confidence < threshold`, the result is treated as `unrecognized_intent`, which triggers a clarification response from Layer 3.
-
-### 3.6 Merge Strategy
-
-```
-1. Try LLM classification
-2. If LLM fails → fallback to keyword matching
-3. If LLM succeeds but confidence < threshold → use fallback result (if any)
-4. If neither produces a result → unrecognized_intent
-```
-
-LLM result + fallback result can disagree. When they disagree and LLM confidence is above threshold, LLM wins. When both are below, keyword fallback wins (it's deterministic).
-
-> **Note:** If neither LLM nor keyword produces a result (`unrecognized_intent`), the framework routes to the `errorNode` for unified error handling (see Routing & Execution spec Section 6).
+There is no keyword fallback. A low-confidence result and a failed LLM call produce the same outcome: `unrecognized_intent`, triggering a clarification question. This is simpler, more predictable, and avoids keyword collision across 17+ intents.
 
 ## 4. Output Contract
 
@@ -329,12 +311,12 @@ LLM result + fallback result can disagree. When they disagree and LLM confidence
 ClassifiedIntent {
   intent:     string      // the resolved intent label
   confidence: number      // 0.0 - 1.0
-  source:     "llm" | "keyword" | "unrecognized"
+  source:     "llm" | "unrecognized"
   reasoning?: string      // LLM's reasoning (for audit trail)
 }
 ```
 
-The `source` field indicates which classifier produced the result, enabling downstream nodes to adjust behavior (e.g., "keyword match → proceed immediately; LLM match → consider re-confirming").
+The `source` field indicates which classifier produced the result, enabling downstream nodes to adjust behavior (e.g., "LLM match with high confidence → proceed; LLM match with borderline confidence → re-confirm").
 
 ### 4.2 Multi-Intent Output
 
