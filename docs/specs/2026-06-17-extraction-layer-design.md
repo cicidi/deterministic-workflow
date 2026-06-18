@@ -143,7 +143,7 @@ extraction_factory:
 Input:
   user_input:           string              // raw user utterance
   conversation_context: ContextWindow        // last N messages
-  intent_payloads:      IntentPayload[]       // from intent classification (Section 4 of intent spec)
+  intent_payloads:      ClassifiedIntent[]    // from intent classification (Section 4 of intent spec)
   extraction_rules:     ExtractionRuleSchema[] // what fields to look for
   state_context:        StateContext          // FSM state name + hint
 
@@ -158,7 +158,7 @@ ExtractionResult {
 }
 ```
 
-The Extract node receives the `IntentPayload[]` from the classifier and produces typed `ExtractedIntentPayload` subclasses. Each intent maps to its corresponding payload class via `INTENT_PAYLOAD_MAP` (see Section 3.7).
+The Extract node receives the `ClassifiedIntent[]` from the classifier and produces typed `ExtractedIntentPayload` subclasses. Each intent maps to its corresponding payload class via `INTENT_PAYLOAD_MAP` (see Section 3.7).
 
 ### 3.2 Implementation Options
 
@@ -760,7 +760,7 @@ custom_engine:   my_package.MyEngine                      # user-provided RuleEn
 User Input
    |
    v
-[Intent Classification]  →  ClassificationResult { intents: IntentPayload[] }
+[Intent Classification]  →  ClassificationResult { intents: ClassifiedIntent[] }
    |
    v
 [Intent Combination Validate]  →  rejects multiple complex intents (see Intent spec 4.3)
@@ -792,9 +792,38 @@ Layer 2: DECIDE
 
 3. **Multi-intent per message**: A single user message may carry multiple intents (e.g., `file_claim` + `provide_information`). The Extract node produces one `ExtractedIntentPayload` per intent. Simple intents (non-`complex`) may be combined freely; multiple complex intents in one message are rejected by the combination validator before extraction begins.
 
+### 7.3 Design Decision: Why Separate Classify and Extract
+
+**Decision:** Intent classification and entity extraction are separate nodes (two-stage), not a single combined LLM call.
+
+**Rationale — accuracy over latency:**
+
+| Metric | Two-Stage (separate) | Single-Stage (combined) |
+|--------|---------------------|------------------------|
+| **Accuracy** | High — each extract prompt only contains the schema for the matched intent(s) | Low — single prompt must include ALL intents' ALL field schemas, leading to cross-schema field confusion |
+| **Cost** | 2x LLM calls | 1x LLM call |
+| **Latency** | ~2x of single call | ~1x |
+
+**Why accuracy wins:**
+
+The extraction prompt must include field descriptions, validation rules, and few-shot examples for every field. In a combined call, the LLM faces the union of all schemas:
+
+- `get_quote` has fields `{property_type, address, postal_code, building_age, floor_area}`
+- `file_claim` has fields `{claim_type, damage_description, incident_date, incident_location}`
+- `update_policy` has fields `{policy_number, coverage_amount, effective_date}`
+
+A combined prompt containing all 3 schemas (~12+ fields) causes the LLM to:
+1. Confuse field boundaries — extract `damage_description` into a `get_quote` payload
+2. Miss narrow-schema fields amidst the noise
+3. Produce ambiguous output for overlapping concept names ("address" could be property or incident)
+
+Two stages eliminate this: classify first to scope the schema, extract with only that schema. Accuracy is the non-negotiable dimension — one wrong field can route the entire Layer 2 workflow incorrectly. The cost of an extra LLM call is negligible compared to the cost of a business-logic error.
+
+**Future:** For small deployments with <5 intents and few fields, a `classify_and_extract_combined: true` configuration option may be added, but it is not the default.
+
 ---
 
-## 8. Pattern: Two-Stage Extraction
+## 8. Pattern: Two-Stage Extraction (Type-First)
 
 For scenarios where the extraction schema depends on a prior decision (e.g., auto vs home insurance):
 

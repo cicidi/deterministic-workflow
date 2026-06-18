@@ -169,7 +169,7 @@ LLM result + fallback result can disagree. When they disagree and LLM confidence
 ### 4.1 Classification Result (per-intent)
 
 ```
-IntentPayload {
+ClassifiedIntent {
   intent:     string      // the resolved intent label
   confidence: number      // 0.0 - 1.0
   source:     "llm" | "keyword" | "unrecognized"
@@ -181,11 +181,11 @@ The `source` field indicates which classifier produced the result, enabling down
 
 ### 4.2 Multi-Intent Output
 
-A single user utterance may carry multiple intents ("I want to file a claim, my phone is 123-456-7890"). The classifier returns a list of `IntentPayload` objects:
+A single user utterance may carry multiple intents ("I want to file a claim, my phone is 123-456-7890"). The classifier returns a list of `ClassifiedIntent` objects:
 
 ```
 ClassificationResult {
-  intents: IntentPayload[]  // one or more resolved intents
+  intents: ClassifiedIntent[]  // one or more resolved intents
 }
 ```
 
@@ -229,7 +229,7 @@ Each intent carries a `complex` flag. The combination rules prevent incompatible
 **Validation pseudo-code:**
 
 ```
-def validate_intent_combination(intents: IntentPayload[], intent_defs: IntentDef[], mode: string):
+def validate_intent_combination(intents: ClassifiedIntent[], intent_defs: IntentDef[], mode: string):
     complex = [i for i in intents if intent_defs[i.intent].complex]
     if len(complex) > 1:
         if mode == "error":
@@ -246,7 +246,7 @@ def validate_intent_combination(intents: IntentPayload[], intent_defs: IntentDef
 
 ### 5.1 Multi-Intent Detection
 
-Multi-intent detection is now implemented. The classifier returns a list of `IntentPayload` objects per user message (see Section 4.2). Intent combination validation (Section 4.3) prevents incompatible complex intents from being processed together.
+Multi-intent detection is now implemented. The classifier returns a list of `ClassifiedIntent` objects per user message (see Section 4.2). Intent combination validation (Section 4.3) prevents incompatible complex intents from being processed together.
 
 ### 5.2 Intent → Extraction Payload Mapping
 
@@ -268,7 +268,7 @@ When the LLM analyzes a user message, it should:
 
 1. Identify all intents present (may be multiple)
 2. For each intent, extract any associated data fields
-3. Return an `IntentPayload` for EACH detected intent with its own confidence score
+3. Return an `ClassifiedIntent` for EACH detected intent with its own confidence score
 4. Do not merge data from different intents into a single payload
 
 **Example:** "I want to file a claim, my phone is 123-456-7890" produces TWO payloads — one `FileClaimIntentPayload` (no data) + one `ProvideInformationIntentPayload` (phone number).

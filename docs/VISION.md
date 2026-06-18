@@ -53,6 +53,7 @@ Every spec document MUST:
 5. **Cross-reference parent/child docs** — maintain document tree
 6. **Include open questions** — not solved upfront, deferred for architect discussion
 7. **Contain schemas + samples only** — no implementation code
+8. **Include decision rationale** — document WHY each design decision was made (e.g., accuracy vs cost vs latency trade-offs); decisions are recorded both in the architecture decisions table (Section 5) and inline in the reasoning sections of relevant specs
 
 ### 3.3 After Specs Complete
 
@@ -104,6 +105,8 @@ Every spec document MUST:
 | 19 | 2026-06-17 | Node loop-back | Self-correction: detect incomplete → return to earlier node |
 | 20 | 2026-06-17 | Tool ecosystem integration | LangFlow (drag-drop editor), LangGraph CLI (dev), LangSmith (debug) |
 | 21 | 2026-06-17 | 3 environments: dev, e2e, prod | Per-env thresholds, models, retry configs |
+| 22 | 2026-06-18 | Two-stage classify+extract (separate nodes) | Accuracy > latency: scoped schema per extract call prevents cross-intent field confusion; single combined prompt with all schemas causes LLM to misroute fields between intents |
+| 23 | 2026-06-18 | Multi-intent per message + complex flag | Single user message can carry multiple intents; `complex` flag on IntentDef prevents incompatible multi-turn intents from being processed together |
 
 ---
 
@@ -171,6 +174,7 @@ Every spec document MUST:
 - [ ] Open questions section
 - [ ] Changelog
 - [ ] References section
+- [ ] Design decision rationale (WHY, trade-off analysis) recorded in Architecture Decisions table AND inline in spec
 
 ---
 
