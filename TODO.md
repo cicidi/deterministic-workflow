@@ -9,7 +9,7 @@ Last updated: 2026-06-17
 | Skill | 说明 |
 |-------|------|
 | ✅ **issue-create** | 从 spec 讨论生成结构化 GitHub issue |
-| ✅ **implement-interview** | 访谈式加载 11 篇 spec，产出产品级 implement plan |
+| ✅ **implement-interview** | 访谈式加载 11 篇 spec + brainstorming，产出产品级 implement plan。**这就是 spec-generator（VISION.md 核心愿景）** |
 | ✅ **evals-create** | 生成 goal definition + goal check eval + response eval + intent eval + decision eval |
 | ✅ **ai-cowork-install** | 安装配置 ai-coworker，注册 MCP server，sync 到所有 AI 工具 |
 
@@ -23,7 +23,7 @@ Last updated: 2026-06-17
 | 🔲 **tdd** | 先定义 test case（用户对话、extract node、validate node、decision node、response node）、mock LLM 省 token | P0 |
 | 🔲 **test-client-create** | 模拟 LLM test client 和 agent 对话，测量 complete transaction rate | P1 |
 | 🔲 **code-gen** | 从 implement plan 产出 Python 代码（参考 CrewAI 的 4 个 coding skills） | P1 |
-| 🔲 **spec-generator** | 加载 11 篇 framework spec → 问答式帮助 developer 产出产品级 spec（VISION.md 的核心愿景） | P0 |
+| 🔲 **spec-generator** | ✅ 已合并到 `implement-interview` — brainstorming + 11 篇 spec → 产品级 spec | P0 |
 | 🔲 **ask-docs** | MCP server 实时查最新 spec API（类似 CrewAI 的 ask-docs skill） | P2 |
 | 🔲 **crewai-adaptor** | 让我们的 workflow 能作为 CrewAI Flow/Crew 的一步运行，互相调用 | P1 |
 | 🔲 **history-labeler** | 基于 history turns，正确处理的标记为 positive example，错误的标记为 negative，生成训练/测试数据集。可用现成框架：**Argilla**（数据标注平台）、**Label Studio** | P1 |

@@ -1,6 +1,6 @@
 ---
 name: implement-interview
-description: "Guided interview that walks a developer through all 11 framework specs to produce a complete implementation plan for their specific product. Use when a developer has a concrete product idea and needs a tailored implementation roadmap."
+description: "Guided interview that walks a developer through all 11 framework specs to produce a complete implementation plan for their specific product. Use when a developer has a concrete product idea and needs a tailored implementation roadmap. Combines brainstorming (discovery) + framework specs (constraints) → product-specific spec document."
 user-invocable: true
 ---
 
@@ -8,7 +8,9 @@ user-invocable: true
 
 ## When to Use
 
-A developer says "I want to build X using this framework" and needs to go from product concept → implementation plan. The skill loads all 11 spec documents and interviews the developer step by step.
+A developer says "I want to build X using this framework" and needs to go from product concept → implementation plan. The skill loads all 11 spec documents, runs a brainstorming phase for discovery, then interviews the developer through each spec section.
+
+**This skill IS the `spec-generator` from VISION.md.** It combines brainstorming (open-ended discovery) with framework specs (constraints and templates) to produce a complete, product-specific spec document ready for code implementation planning.
 
 ## Prerequisites
 
