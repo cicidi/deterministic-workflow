@@ -1,9 +1,7 @@
 <p align="center">
   <h1 align="center">Deterministic AI Agent</h1>
   <p align="center">
-    <strong>如果你认为 AI workflow 不需要 100% 确定性，这个项目不适合你。</strong>
-    <br />
-    If you think AI workflows don't need 100% determinism, this project is not for you.
+    <strong>If you think AI workflows don't need 100% determinism, this project is not for you.</strong>
   </p>
   <p align="center">
     A reference architecture for auditable, deterministic LLM agents in regulated industries.
@@ -43,7 +41,7 @@ Existing agent frameworks (LangChain, CrewAI) treat the LLM as the primary decis
 
 A user in the middle of a payment workflow says:
 
-> "算了，我想给别人付款"  *(Never mind, I want to pay someone else.)*
+> "Never mind, I want to pay someone else."
 
 **What a probabilistic agent might do on its own:**
 

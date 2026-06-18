@@ -11,6 +11,7 @@
 7. **Code Conventions.** Every method ≤ 50 lines. Every file ≤ 1000 lines. Executors are small, composable, and single-responsibility. Complex workflows are split across files and sub-workflows.
 8. **LLM Output is JSON.** All LLM interactions produce structured JSON output. The framework enforces output validation guardrails (schema check, field presence, type coercion). Free-text generation is limited to Layer 3 (Response).
 9. **Follow VISION.md.** [docs/VISION.md](./docs/VISION.md) is the authoritative master reference for this project. All design decisions must align with the vision. When writing specs: (a) check the Vision checklist before declaring a spec complete, (b) record every significant design decision with its rationale (WHY) in the Architecture Decisions table AND inline in the relevant spec — accuracy/cost/latency trade-offs must be explicit.
+10. **English-Only Commits.** Every file committed to the GitHub repository must be in English. Non-English content belongs only in directories listed in `.gitignore`. Never commit non-English files to the repo.
 
 <!-- INITIATIVE:chat-experience-deterministic-work-flow START -->
 ## Active Initiative: chat-experience-deterministic-work-flow
