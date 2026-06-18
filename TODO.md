@@ -47,6 +47,18 @@ Last updated: 2026-06-17
 | 10 | [Environment Config](docs/specs/2026-06-17-environment-config.md) | v0.3.0 |
 | 11 | [Auth & Token Verification](docs/specs/2026-06-17-auth-token-verification.md) | v0.2.0 |
 
+## Spec Documents — Planned
+
+| # | Spec | Status | 说明 |
+|---|------|--------|------|
+| 12 | MCP API Protocol | 🔲 draft v0.1 | Framework API via MCP, compatible with Claude/OpenAI/Google |
+| 13 | Conversation Lifecycle | 🔲 draft v0.1 | create/active/paused/resume/timeout, trace_id=user_id |
+| 14 | Observability & Monitoring | 🔲 draft v0.1 | Grafana dashboards, Prometheus metrics, alert rules |
+| 15 | CI/CD (Jenkins) | 🔲 draft v0.1 | Jenkins pipeline, eval→deploy, mrratequote chat example |
+| 16 | A2A Protocol | 🔲 draft v0.1 | Agent-to-Agent communication, sub-workflow = A2A |
+| 17 | Rate Limiting | 🔲 draft v0.1 | per-user/per-tenant/per-tool, interview integration |
+| 18 | Widget Templates | 🔲 draft v0.1 | A2A chatbot template + Claude-generated widgets for mrratequote |
+
 ---
 
 ## Future Work
