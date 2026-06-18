@@ -13,6 +13,7 @@
 | 2026-06-16 | 0.1.0 | Initial intent classification spec |
 | 2026-06-16 | 0.2.0 | Extract custom intent examples to examples/; fix section numbering |
 | 2026-06-17 | 0.3.0 | Add implementation options comparison, YAML schema, open questions, errorNode cross-reference, agentState.phase mention |
+| 2026-06-18 | 0.6.1 | §5.6: mark cross-lingual intent classification as deferred — English-only for initial release |
 | 2026-06-18 | 0.6.0 | Remove keyword fallback entirely: delete §3.4 (Keyword Matching) + §3.6 (Merge Strategy); simplify to LLM-only flow with `unrecognized_intent` as the sole fallback; remove `"keyword"` from `ClassifiedIntent.source` enum; keywords kept in IntentDef as metadata only; add Agent column to §5.2 routing table (ReadOnlyAgent / WriteAgent / EscalationAgent / none) |
 | 2026-06-18 | 0.5.1 | Simplify §2.4: remove Options A/B/C comparison table; keep only LLM + keyword fallback as the single strategy |
 | 2026-06-18 | 0.5.0 | Expand system intents from 8 to 17: remove `resume_conversation` (demoted to system state, not user intent); add `help`, `correction`, `chitchat`, `out_of_scope`, `repeat`, `escalate`, `restart`, `complaint`, `pause`, `ambiguous_request`; add keyword + example YAML definitions for all system intents; expand §5.2 payload mapping to all 17 system intents |
@@ -456,7 +457,7 @@ In long-running conversations (e.g., 20+ turns), user intent may shift gradually
 
 ### 5.6 Cross-Lingual Intent Classification
 
-How should the framework handle non-English input? Options include: (a) translate-to-English before classification, (b) include multilingual examples in the prompt, (c) use a multilingual embedding model. Each has different latency, cost, and accuracy trade-offs.
+> **Deferred.** The framework currently targets English-only. Cross-lingual support (translate-to-English, multilingual embeddings, etc.) is out of scope for the initial release. English is the only supported input language.
 
 ### 5.7 Cold Start: Zero-Shot vs. Few-Shot Prompting
 
