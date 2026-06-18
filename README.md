@@ -139,12 +139,12 @@ A user says: *"I want to file a claim for water damage, my phone is 555-0123"*
 
 ## Documentation
 
-### Spec Documents (11 complete)
+### Spec Documents (13 complete)
 
 | Spec | Covers |
 |------|--------|
 | [High-Level Design](docs/specs/2026-06-16-deterministic-workflow-framework-design.md) | 3-layer architecture, per-node control, framework principles |
-| [Intent Classification](docs/specs/2026-06-16-intent-classification-design.md) | LLM-first + keyword fallback, multi-intent, complex flag |
+| [Intent Classification](docs/specs/2026-06-16-intent-classification-design.md) | LLM-first, 17 system intents, multi-intent, complex flag |
 | [Extraction Layer](docs/specs/2026-06-17-extraction-layer-design.md) | Extract/Validate/Transform pipeline, typed intent payloads, guardrail |
 | [State Machine](docs/specs/2026-06-16-state-machine-design.md) | Transitions + LangGraph fusion, state metadata, intent+state resolution |
 | [Domain Model](docs/specs/2026-06-17-domain-model-design.md) | Entity/State/Transition schemas, single source of truth |
@@ -152,6 +152,7 @@ A user says: *"I want to file a claim for water damage, my phone is 555-0123"*
 | [Response Generation](docs/specs/2026-06-17-response-generation-layer-design.md) | Goal-driven workflow, LLM/widget modes, PII scrubbing |
 | [LLM Gateway](docs/specs/2026-06-17-llm-gateway.md) | Mandatory JSON output, schema validation, retry logic |
 | [RAG Interface](docs/specs/2026-06-18-rag-interface.md) | DocumentStore, Embedder, Retriever, RAGPipeline — adopt, don't invent |
+| [Agent Types](docs/specs/2026-06-18-agent-types.md) | ReadOnlyAgent, WriteAgent, EscalationAgent — intent→agent dispatch |
 | [Tool Ecosystem](docs/specs/2026-06-17-tool-ecosystem.md) | LangFlow, LangGraph CLI, LangSmith, rule engines, MCP |
 | [Environment Config](docs/specs/2026-06-17-environment-config.md) | dev/e2e/prod, env hierarchy, per-env thresholds |
 | [Auth & Token](docs/specs/2026-06-17-auth-token-verification.md) | JWT/OAuth/OIDC, multi-tenant isolation |
@@ -181,7 +182,7 @@ Full end-to-end walkthroughs in [`docs/examples/home-insurance/`](docs/examples/
 
 | Deliverable | Status |
 |-------------|--------|
-| Framework Specs | 11 specs complete |
+| Framework Specs | 13 specs complete |
 | Spec Generator Skill | Planned |
 | Python Reference Implementation | Planned |
 

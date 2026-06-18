@@ -13,7 +13,7 @@
 | 2026-06-16 | 0.1.0 | Initial intent classification spec |
 | 2026-06-16 | 0.2.0 | Extract custom intent examples to examples/; fix section numbering |
 | 2026-06-17 | 0.3.0 | Add implementation options comparison, YAML schema, open questions, errorNode cross-reference, agentState.phase mention |
-| 2026-06-18 | 0.6.0 | Remove keyword fallback entirely: delete §3.4 (Keyword Matching) + §3.6 (Merge Strategy); simplify to LLM-only flow with `unrecognized_intent` as the sole fallback; remove `"keyword"` from `ClassifiedIntent.source` enum; keywords kept in IntentDef as metadata only |
+| 2026-06-18 | 0.6.0 | Remove keyword fallback entirely: delete §3.4 (Keyword Matching) + §3.6 (Merge Strategy); simplify to LLM-only flow with `unrecognized_intent` as the sole fallback; remove `"keyword"` from `ClassifiedIntent.source` enum; keywords kept in IntentDef as metadata only; add Agent column to §5.2 routing table (ReadOnlyAgent / WriteAgent / EscalationAgent / none) |
 | 2026-06-18 | 0.5.1 | Simplify §2.4: remove Options A/B/C comparison table; keep only LLM + keyword fallback as the single strategy |
 | 2026-06-18 | 0.5.0 | Expand system intents from 8 to 17: remove `resume_conversation` (demoted to system state, not user intent); add `help`, `correction`, `chitchat`, `out_of_scope`, `repeat`, `escalate`, `restart`, `complaint`, `pause`, `ambiguous_request`; add keyword + example YAML definitions for all system intents; expand §5.2 payload mapping to all 17 system intents |
 | 2026-06-18 | 0.4.0 | IntentDef adds `complex` field; multi-intent detection implemented (single user message → multiple intents); intent combination validation rules; intent→payload mapping table |
@@ -393,35 +393,45 @@ Each intent is mapped to a typed extraction payload consumed by the Extract node
 
 #### System Intents
 
-| Intent | Payload Class | Extraction / Routing |
-|--------|--------------|---------------------|
-| `start_conversation` | *(skip extraction)* | route to conversation init node |
-| `finish_conversation` | *(skip extraction)* | route to conversation end node |
-| `pause` | *(skip extraction)* | pause processing, await user signal |
-| `restart` | *(skip extraction)* | reset agentState, return to entry |
-| `ask_question` | *(skip extraction)* | route directly to Q&A node |
-| `provide_information` | `ProvideInformationIntentPayload` | `field_values: dict[str, Any]` |
-| `repeat` | *(skip extraction)* | replay last assistant message |
-| `confirm` | `ConfirmIntentPayload` | `fields: dict[str, bool]` |
-| `decline` | `DeclineIntentPayload` | `fields: dict[str, bool]` |
-| `unrecognized_intent` | *(skip extraction)* | route to clarification node |
-| `correction` | `CorrectionIntentPayload` | `corrected_fields: dict[str, Any]` |
-| `ambiguous_request` | `AmbiguousRequestPayload` | `possible_intents: str[]`, requires user disambiguation |
-| `out_of_scope` | *(skip extraction)* | route to out-of-scope response node |
-| `help` | *(skip extraction)* | route to help/capabilities node |
-| `chitchat` | *(skip extraction)* | route to chitchat response node |
-| `complaint` | `ComplaintIntentPayload` | `subject: str, details: str` |
-| `escalate` | `EscalateIntentPayload` | `reason: str, urgency: str` |
+| Intent | Agent | Payload Class | Extraction / Routing |
+|--------|-------|--------------|---------------------|
+| `start_conversation` | — | *(skip extraction)* | route to conversation init node |
+| `finish_conversation` | — | *(skip extraction)* | route to conversation end node |
+| `pause` | — | *(skip extraction)* | pause processing, await user signal |
+| `restart` | — | *(skip extraction)* | reset agentState, return to entry |
+| `confirm` | — | `ConfirmIntentPayload` | `fields: dict[str, bool]` |
+| `decline` | — | `DeclineIntentPayload` | `fields: dict[str, bool]` |
+| `correction` | — | `CorrectionIntentPayload` | `corrected_fields: dict[str, Any]` |
+| `unrecognized_intent` | — | *(skip extraction)* | route to clarification node |
+| `ambiguous_request` | — | `AmbiguousRequestPayload` | `possible_intents: str[]`, requires user disambiguation |
+| `out_of_scope` | — | *(skip extraction)* | route to out-of-scope response node |
+| `ask_question` | ReadOnlyAgent | *(skip extraction)* | agent.query(prompt, ...) |
+| `help` | ReadOnlyAgent | *(skip extraction)* | agent.query(prompt, ...) |
+| `chitchat` | ReadOnlyAgent | *(skip extraction)* | agent.query(prompt, ...) |
+| `repeat` | ReadOnlyAgent | *(skip extraction)* | replay last assistant message |
+| `provide_information` | WriteAgent | `ProvideInformationIntentPayload` | `field_values: dict[str, Any]` |
+| `complaint` | EscalationAgent | `ComplaintIntentPayload` | `subject: str, details: str` |
+| `escalate` | EscalationAgent | `EscalateIntentPayload` | `reason: str, urgency: str` |
+
+> **Conversation control intents** (`start_conversation`, `finish_conversation`, `pause`, `restart`, `confirm`, `decline`, `correction`) and **error/recovery intents** (`unrecognized_intent`, `ambiguous_request`, `out_of_scope`) map to **0 agents** — the state machine handles them directly.
 
 #### Custom Intents (per-workflow)
 
-| Intent | Payload Class | Extraction / Routing |
-|--------|--------------|---------------------|
-| `<domain_intent>` | `<DomainIntentPayload>` | `field_values: dict[str, Any]` |
+| Intent | Agent | Payload Class | Extraction / Routing |
+|--------|-------|--------------|---------------------|
+| `<domain_intent>` (read) | ReadOnlyAgent | `<DomainIntentPayload>` | `field_values: dict[str, Any]` |
+| `<domain_intent>` (write) | WriteAgent | `<DomainIntentPayload>` | `field_values: dict[str, Any]` |
 
-Custom intents follow the same pattern as `provide_information` — entity extraction populates a domain-specific payload consumed by the downstream workflow node. The payload class is derived from the intent name (e.g., `get_quote` → `GetQuoteIntentPayload`). Complex intents may skip extraction on the first turn and defer to multi-turn slot-filling.
+Each custom intent maps to exactly **0 or 1 agent**, determined by its operation category:
 
-> **Example — Home Insurance:** `get_quote` → `GetQuoteIntentPayload` (`field_values`), `file_claim` → `FileClaimIntentPayload` (`field_values`), `check_coverage` → `CheckCoverageIntentPayload` (`field_values`).
+| Operation Category | Agent |
+|-------------------|-------|
+| Lookup, search, status check | ReadOnlyAgent |
+| Create, update, delete, execute | WriteAgent |
+| Handoff, complaint | EscalationAgent |
+| Conversation control | — (none) |
+
+> **Example — Home Insurance:** `get_quote` → WriteAgent (`GetQuoteIntentPayload`), `file_claim` → WriteAgent (`FileClaimIntentPayload`), `check_coverage` → ReadOnlyAgent (`CheckCoverageIntentPayload`), `ask_about_claim_status` → ReadOnlyAgent (`AskClaimStatusIntentPayload`).
 
 ### 5.3 Intent Analysis Prompt Guidelines
 
