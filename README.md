@@ -152,7 +152,7 @@ A user says: *"I want to file a claim for water damage, my phone is 555-0123"*
 | [Response Generation](docs/specs/2026-06-17-response-generation-layer-design.md) | Goal-driven workflow, LLM/widget modes, PII scrubbing |
 | [LLM Gateway](docs/specs/2026-06-17-llm-gateway.md) | Mandatory JSON output, schema validation, retry logic |
 | [RAG Interface](docs/specs/2026-06-18-rag-interface.md) | DocumentStore, Embedder, Retriever, RAGPipeline — adopt, don't invent |
-| [Agent Types](docs/specs/2026-06-18-agent-types.md) | ReadOnlyAgent, WriteAgent, EscalationAgent — intent→agent dispatch |
+| [Agent Types](docs/specs/2026-06-18-agent-types.md) | ReadOnlyAgent, EscalationAgent — intent→agent dispatch; writes stay in state machine |
 | [Tool Ecosystem](docs/specs/2026-06-17-tool-ecosystem.md) | LangFlow, LangGraph CLI, LangSmith, rule engines, MCP |
 | [Environment Config](docs/specs/2026-06-17-environment-config.md) | dev/e2e/prod, env hierarchy, per-env thresholds |
 | [Auth & Token](docs/specs/2026-06-17-auth-token-verification.md) | JWT/OAuth/OIDC, multi-tenant isolation |

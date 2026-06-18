@@ -1,7 +1,7 @@
 # Agent Types — Specialized Execution Agents
 
 > Part of [Deterministic Workflow Framework — High-Level Design](./2026-06-16-deterministic-workflow-framework-design.md)
-> Covers: Three agent abstractions that execute tasks after intent classification and state machine routing. Agents consume the RAG interface but are higher-level — they own execution behavior.
+> Covers: Two agent abstractions that execute tasks after intent classification and state machine routing. Write operations are handled by the deterministic state machine — not by an agent.
 
 ---
 
@@ -9,35 +9,37 @@
 
 | Date | Version | Changes |
 |------|---------|---------|
+| 2026-06-18 | 0.2.0 | Remove WriteAgent — write operations are state machine territory, not agent territory |
 | 2026-06-18 | 0.1.0 | Initial agent types spec — ReadOnlyAgent, WriteAgent, EscalationAgent |
 
 ---
 
 ## 1. Role
 
-After Layer 1 classifies intent and Layer 2 decides the next state, **Layer 3 delegates execution to a specialized agent**. Agents are the "doers" — they own the response generation, tool calls, and final output for their assigned intent category.
+After Layer 1 classifies intent and Layer 2 decides the next state, **Layer 3 delegates execution to a specialized agent** for specific intent categories. Write/transactional operations (quote, claim, policy changes) are handled deterministically by the state machine — not delegated to an agent.
 
 ```
 Intent Classification → State Machine → Agent Dispatch
                                               │
-                    ┌─────────────────────────┼─────────────────────────┐
-                    │                         │                         │
-              ReadOnlyAgent              WriteAgent              EscalationAgent
-              (ask, help, chitchat)     (quote, claim, policy)   (complaint, escalate)
-                    │                         │                         │
-                    └─────────────────────────┼─────────────────────────┘
+                    ┌─────────────────────────┴─────────────────────────┐
+                    │                                                   │
+              ReadOnlyAgent                                      EscalationAgent
+              (ask, help, chitchat)                              (complaint, escalate)
+                    │                                                   │
+                    └─────────────────────────┬─────────────────────────┘
                                               │
-                                         RAG Pipeline
-                                         LLM Gateway
-                                         Tool Ecosystem
+                                     State Machine (write ops)
+                                     RAG Pipeline
+                                     LLM Gateway
 ```
 
 ### Design Principles
 
-1. **Capability-bounded.** Each agent declares its allowed operations. A ReadOnlyAgent cannot write. A WriteAgent cannot escalate on its own.
+1. **Capability-bounded.** Each agent declares its allowed operations. A ReadOnlyAgent cannot write. All writes go through the state machine.
 2. **State-aware.** Agents receive `agentState` context — they know what phase the user is in, what data has been collected.
 3. **Protocol-based.** Like the RAG interface, all agents are `Protocol` classes. Any conforming implementation works.
 4. **Single responsibility.** Agents handle ONE category of intents. No agent does everything.
+5. **Writes are deterministic.** Write operations (create, update, delete, execute) are handled by the state machine with auditable transitions. No LLM decides to write.
 
 ---
 
@@ -101,66 +103,7 @@ class ReadOnlyResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 ```
 
-### 2.2 WriteAgent
-
-Executes transactions, creates records, modifies data. **Can read AND write.** Must log every state mutation.
-
-```python
-from typing import Protocol, Any
-
-class WriteAgent(Protocol):
-    """Agent for transactional operations. Can read and write state.
-
-    Assigned intents:
-        - get_quote (domain-specific: create quote)
-        - file_claim (domain-specific: create claim)
-        - renew_policy (domain-specific: renew policy)
-        - update_policy (domain-specific: modify policy)
-        - cancel_policy (domain-specific: cancel policy)
-
-    Backend examples:
-        - State machine executor with API calls to backend services
-        - Multi-turn form-filling workflow
-        - Transaction script with database writes
-    """
-
-    def execute(
-        self,
-        intent: str,
-        payload: dict[str, Any],
-        agent_state: dict[str, Any],
-        **kwargs: Any,
-    ) -> WriteResult:
-        """Execute a transactional operation.
-
-        intent:       The classified intent (e.g., 'get_quote', 'file_claim')
-        payload:      Extracted field values from Layer 1
-        agent_state:  Current agent state (phase, collected fields, conversation history)
-        kwargs:       Agent-specific parameters
-
-        Returns a WriteResult with the outcome and updated state.
-        """
-        ...
-
-    def capabilities(self) -> list[str]:
-        """Return the list of operations this agent supports.
-        Example: ['create_quote', 'file_claim', 'update_policy', 'cancel_policy']
-        """
-        ...
-
-
-@dataclass
-class WriteResult:
-    """Result from a WriteAgent execution."""
-    status: str                                # "success" | "pending_review" | "failed"
-    response: str                              # user-facing message
-    updated_state: dict[str, Any]              # state changes to merge into AgentState
-    audit_entry: dict[str, Any]                # logged mutation for audit trail
-    next_step: Optional[str] = None            # suggested next state transition
-    metadata: dict[str, Any] = field(default_factory=dict)
-```
-
-### 2.3 EscalationAgent
+### 2.2 EscalationAgent
 
 Routes to a human operator. Collects context, determines urgency, initiates handoff. **Does not resolve the issue itself.**
 
@@ -234,13 +177,6 @@ def dispatch_agent(intent: str, intent_defs: dict) -> type[Protocol]:
         "check_coverage":        ReadOnlyAgent,     # policy lookup → read
         "ask_about_claim_status": ReadOnlyAgent,     # claim lookup → read
 
-        # WriteAgent intents
-        "get_quote":             WriteAgent,         # create quote → write
-        "file_claim":            WriteAgent,         # create claim → write
-        "renew_policy":          WriteAgent,         # renew → write
-        "update_policy":         WriteAgent,         # modify → write
-        "cancel_policy":         WriteAgent,         # cancel → write
-
         # EscalationAgent intents
         "escalate":              EscalationAgent,
         "complaint":             EscalationAgent,
@@ -248,7 +184,7 @@ def dispatch_agent(intent: str, intent_defs: dict) -> type[Protocol]:
     return agent_map.get(intent)
 ```
 
-**Intents without a dedicated agent** (`start_conversation`, `finish_conversation`, `pause`, `restart`, `confirm`, `decline`, `correction`, `provide_information`, `ambiguous_request`, `out_of_scope`, `unrecognized_intent`) are handled directly by the state machine — they are conversation control or slot-filling signals, not task execution.
+**Intents without a dedicated agent** (`start_conversation`, `finish_conversation`, `pause`, `restart`, `confirm`, `decline`, `correction`, `provide_information`, `ambiguous_request`, `out_of_scope`, `unrecognized_intent`, and all write intents like `get_quote`, `file_claim`, `renew_policy`, `update_policy`, `cancel_policy`) are handled directly by the state machine — they are conversation control, slot-filling, or deterministic write operations.
 
 ---
 
@@ -259,10 +195,10 @@ Each agent type has a bounded set of allowed operations. The tool ecosystem enfo
 | Agent Type | Can Read (RAG) | Can Call APIs | Can Write DB | Can Send to Human |
 |------------|---------------|--------------|-------------|-------------------|
 | **ReadOnlyAgent** | Yes | No | No | No |
-| **WriteAgent** | Yes | Yes | Yes | No (must escalate via state machine) |
 | **EscalationAgent** | Yes (context) | No | No | Yes |
+| **State Machine (write ops)** | No | Yes | Yes | No |
 
-**Cross-agent escalation rule:** A WriteAgent that encounters a blocking error (e.g., policy not found, fraud flag) does NOT escalate on its own. It returns a `WriteResult(status="failed")`. The state machine detects the failure and routes to the EscalationAgent. Agents never hand off to each other directly.
+Write operations are NEVER delegated to an agent. They execute as deterministic state machine transitions with full audit trail.
 
 ---
 
@@ -277,13 +213,6 @@ agents:
       top_k: 5
       max_context_length: 4000
     fallback_response: "I'm sorry, I couldn't find an answer to that question."
-
-  write:
-    backend: "state_machine"   # state_machine (multi-turn) | api_direct | custom
-    audit: true                # log every state mutation
-    retry:
-      max_attempts: 3
-      backoff: "exponential"
 
   escalation:
     backend: "ticket"          # ticket | live_chat | custom
@@ -301,6 +230,7 @@ agents:
 
 - **Implementation of any agent backend.** Agents are dispatched to backend implementations configured by the adopting team.
 - **Agent-to-agent communication.** Agents never call each other. The state machine orchestrates all transitions.
+- **Write operations.** All writes (create, update, delete, execute) are deterministic state machine transitions. No agent performs writes.
 - **Multi-agent debate or voting.** This is a deterministic framework, not an agent swarm. One agent handles one intent.
 - **Agent lifecycle or memory management.** Agents are stateless per invocation. State lives in `AgentState`.
 

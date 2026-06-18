@@ -420,18 +420,20 @@ Each intent is mapped to a typed extraction payload consumed by the Extract node
 | Intent | Agent | Payload Class | Extraction / Routing |
 |--------|-------|--------------|---------------------|
 | `<domain_intent>` (read) | ReadOnlyAgent | `<DomainIntentPayload>` | `field_values: dict[str, Any]` |
-| `<domain_intent>` (write) | WriteAgent | `<DomainIntentPayload>` | `field_values: dict[str, Any]` |
+| `<domain_intent>` (write) | — | `<DomainIntentPayload>` | `field_values: dict[str, Any]` |
 
 Each custom intent maps to exactly **0 or 1 agent**, determined by its operation category:
 
 | Operation Category | Agent |
 |-------------------|-------|
 | Lookup, search, status check | ReadOnlyAgent |
-| Create, update, delete, execute | WriteAgent |
+| Create, update, delete, execute | — (state machine) |
 | Handoff, complaint | EscalationAgent |
 | Conversation control | — (none) |
 
-> **Example — Home Insurance:** `get_quote` → WriteAgent (`GetQuoteIntentPayload`), `file_claim` → WriteAgent (`FileClaimIntentPayload`), `check_coverage` → ReadOnlyAgent (`CheckCoverageIntentPayload`), `ask_about_claim_status` → ReadOnlyAgent (`AskClaimStatusIntentPayload`).
+> Write operations NEVER go through an agent. They execute as deterministic state machine transitions.
+
+> **Example — Home Insurance:** `get_quote` → state machine (`GetQuoteIntentPayload`), `file_claim` → state machine (`FileClaimIntentPayload`), `check_coverage` → ReadOnlyAgent (`CheckCoverageIntentPayload`), `ask_about_claim_status` → ReadOnlyAgent (`AskClaimStatusIntentPayload`).
 
 ### 5.3 Intent Analysis Prompt Guidelines
 
