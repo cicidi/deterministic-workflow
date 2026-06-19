@@ -13,7 +13,7 @@
 | 2026-06-17 | 0.1.0 | Initial domain model spec: Entity + State + Transition schema |
 | 2026-06-17 | 0.2.0 | Add implementation options (flat vs nested vs code-first); agentState.phase mapping; errorNode as standard transition target |
 | 2026-06-17 | 0.3.0 | Add Section 1.1: Implementation Approaches (Flat YAML vs Nested/Hierarchical vs Code-First) |
-| 2026-06-18 | 0.4.0 | Replace §6 (duplicated guard expression syntax) with cross-reference to authoritative [State Machine Design §3.4](./2026-06-16-state-machine-design.md); guard expression concerns delegated to state machine spec |
+| 2026-06-18 | 0.5.0 | Adopt OpenAPI 3.1 Schema as the data model definition standard; replace custom FieldDef format with JSON Schema; add HomeInsurance/UserInfo/Address/QuoteRequest/QuoteResponse examples; add downstream API schema patterns | |
 
 ---
 
@@ -40,63 +40,130 @@ Transitions + guards              transform_strategy
 
 ### 1.1 Implementation Approaches
 
-Three architectural options for authoring domain models. All three share the same entity/state/transition schema; they differ in *how* the definition is structured and maintained.
+Three architectural options for authoring domain models. All three share the same entity/state/transition schema; they differ in *how* the entity field definitions are authored and consumed.
 
-#### Option A: Flat YAML Domain Model (Current Approach)
+#### Option A: OpenAPI Schema (Recommended)
 
-Entities are defined as flat field lists. Every field is a top-level key under the entity. No nesting or compound field support.
+Entity fields are defined using [OpenAPI 3.1 Schema Objects](https://spec.openapis.org/oas/latest.html#schema-object) (JSON Schema dialect). The framework reads `components/schemas/` directly — no translation layer needed.
+
+```yaml
+# domain-models/home-insurance.yaml — OpenAPI components/schemas
+components:
+  schemas:
+    Address:
+      type: object
+      required: [street, city, province, postal_code]
+      properties:
+        street:
+          type: string
+          minLength: 3
+        city:
+          type: string
+        province:
+          type: string
+          enum: [ON, QC, BC, AB, MB, SK, NS, NB, NL, PE, NT, YT, NU]
+        postal_code:
+          type: string
+          pattern: "^[A-Za-z][0-9][A-Za-z] ?[0-9][A-Za-z][0-9]$"
+
+    UserInfo:
+      type: object
+      required: [first_name, last_name, email]
+      properties:
+        first_name: { type: string, minLength: 1 }
+        last_name:  { type: string, minLength: 1 }
+        email:      { type: string, format: email }
+        phone:      { type: string, pattern: "^\\+?1?\\d{10}$" }
+        date_of_birth: { type: string, format: date }
+
+    HomeInsurance:
+      description: "Complete home insurance application"
+      type: object
+      required: [owner, home_address, property_info, coverage_info]
+      properties:
+        owner:
+          $ref: "#/components/schemas/UserInfo"
+        home_address:
+          $ref: "#/components/schemas/Address"
+        property_info:
+          $ref: "#/components/schemas/PropertyInfo"
+        coverage_info:
+          $ref: "#/components/schemas/CoverageInfo"
+
+    QuoteRequest:
+      description: "Downstream API request for submitting a quote"
+      type: object
+      required: [applicant, property, coverage, quote_id]
+      properties:
+        quote_id:  { type: string, format: uuid }
+        applicant: { $ref: "#/components/schemas/UserInfo" }
+        property:
+          type: object
+          required: [address, property_info]
+          properties:
+            address: { $ref: "#/components/schemas/Address" }
+            property_info: { $ref: "#/components/schemas/PropertyInfo" }
+        coverage:  { $ref: "#/components/schemas/CoverageInfo" }
+        requested_at: { type: string, format: date-time }
+
+  # Framework state bindings
+  x-state-bindings:
+    collect_policyholder_info:
+      entity: HomeInsurance
+      fields: [owner]
+    collect_property_address:
+      entity: HomeInsurance
+      fields: [home_address]
+    submit_quote:
+      entity: QuoteRequest
+```
+
+**Pros:** Industry-standard format (JSON Schema). Full ecosystem: validators, code generators, IDE auto-complete for YAML/JSON. `$ref` enables schema composition without duplication. OpenAPI tooling produces interactive docs (Swagger UI). Downstream API contracts are defined in the same format as domain entities.
+
+**Cons:** Slightly more verbose than flat YAML for simple schemas. Requires understanding of `$ref` resolution rules for nested schemas.
+
+#### Option B: Flat YAML Domain Model
+
+Entities are defined as flat field lists using a custom YAML dialect. Every field is a top-level key with framework-specific annotations (`deterministic_fallback`, `transform`, `examples`).
 
 ```yaml
 entities:
   property_info:
     fields:
-      property_type: { type: enum, values: [apartment, house, villa] }
-      address:       { type: string, required: true }
+      property_type: { type: enum, values: [apartment, house, villa], required: true }
+      address:       { type: string, required: true, min_length: 5 }
       postal_code:   { type: string, pattern: "^[0-9]{6}$" }
       building_age:  { type: int, range: { min: 0, max: 200 } }
 ```
 
-**Pros:** Simple to read and write. Tooling is straightforward — every field is a single key. LLM extraction prompts map 1:1 to field descriptions.
+**Pros:** Simple to read and write. LLM extraction prompts map 1:1 to field descriptions.
 
-**Cons:** No way to represent compound data (e.g., `address` as `{street, city, province, postal_code}`). Entity schemas grow flat and can become unwieldy for large entities.
+**Cons:** Custom format — no tooling ecosystem. No `$ref` for schema reuse. No compound field support. Framework must maintain a translation layer from custom dialect to JSON Schema for downstream consumption.
 
-#### Option B: Nested/Hierarchical Domain Model
+#### Option C: Code-First Pydantic Models
 
-Entities support compound fields. A field can contain sub-fields, enabling structured nested data.
-
-```yaml
-entities:
-  property_info:
-    fields:
-      property_type: { type: enum, values: [apartment, house, villa] }
-      address:
-        type: object
-        required: true
-        fields:
-          street:      { type: string, required: true }
-          city:        { type: string, required: true }
-          province:    { type: string, required: true }
-          postal_code: { type: string, pattern: "^[0-9]{6}$" }
-      building_age: { type: int, range: { min: 0, max: 200 } }
-```
-
-**Pros:** Natural modeling of structured data (addresses, personal info with first_name/last_name, policy details with nested coverage). LLM extraction can target sub-fields independently. Validation rules apply per sub-field.
-
-**Cons:** More complex YAML structure. Tooling must handle recursive field expansion. Guard expressions become more verbose (`address.city` vs flat `city`).
-
-#### Option C: Code-First Model Generation
-
-Entities are defined as Python dataclasses or Pydantic models. The YAML domain model is auto-generated from the code definitions.
+Entities are defined as Python Pydantic models. The YAML domain model is auto-generated.
 
 ```python
 from pydantic import BaseModel, Field
+from typing import Literal
 
-class PropertyInfo(BaseModel):
-    property_type: Literal["apartment", "house", "villa"]
-    address: str = Field(min_length=5)
-    postal_code: str = Field(pattern=r"^\d{6}$")
-    building_age: int = Field(ge=0, le=200)
+class Address(BaseModel):
+    street: str = Field(min_length=3)
+    city: str
+    province: str
+    postal_code: str = Field(pattern=r"^[A-Z]\d[A-Z]\s?\d[A-Z]\d$")
+
+class UserInfo(BaseModel):
+    first_name: str = Field(min_length=1)
+    last_name: str = Field(min_length=1)
+    email: str
+    phone: str | None = Field(pattern=r"^\+?1?\d{10}$")
 ```
+
+**Pros:** Full IDE support. JSON Schema export built into Pydantic v2+.
+
+**Cons:** Requires code-generation step. Non-Python developers cannot author directly.
 
 ```yaml
 # Auto-generated domain model YAML
@@ -115,47 +182,61 @@ entities:
 
 ### Comparison Matrix
 
-| Dimension | Option A: Flat YAML | Option B: Nested YAML | Option C: Code-First |
-|-----------|-------------------|----------------------|----------------------|
-| **Complexity** | Low — flat key-value | Medium — recursive field structure | Medium-High — requires Python + codegen |
-| **Readability** | High — simple, flat structure | Medium — nesting adds depth but clarity for compound data | Low — source of truth is Python, not YAML |
-| **Tooling Support** | High — simple YAML parsing | Medium — recursive processing needed | High — Pydantic ecosystem, IDE support |
-| **Dynamic Schema Support** | Low — flat only | High — nested fields match real-world data | Medium — Pydantic supports nested models |
-| **IDE Support** | Low — raw YAML | Low — raw YAML | High — full Python type-checking, autocomplete |
+| Dimension | Option A: OpenAPI Schema | Option B: Flat YAML | Option C: Code-First |
+|-----------|------------------------|-------------------|----------------------|
+| **Tooling Ecosystem** | High — validators, codegen, Swagger UI, IDE plugins | Low — custom parsing only | High — Pydantic ecosystem, IDE support |
+| **Schema Composition** | High — `$ref` across schemas | Low — flat field lists, no reuse | High — Python inheritance + composition |
+| **Compound Fields** | High — native `object` type + `$ref` | Low — flat only, no nesting | High — Pydantic nested models |
+| **Human Readability** | High — standard JSON Schema, widely recognized | High — simple YAML | Low — source is Python, not YAML |
+| **Industry Standard** | High — OpenAPI is an industry standard | Low — custom format | Medium — JSON Schema export available |
+| **LLM Structured Output** | Direct — auto-generate JSON Schema for LLM output guardrails | Indirect — framework translates custom format | Direct — Pydantic `.model_json_schema()` |
 
-**Default recommendation: Option A (Flat YAML) for most use cases. Use Option B (Nested YAML) when entities contain compound fields like addresses or personal info with sub-fields. Option C (Code-First) is available for teams that prefer Python-native development and do not need non-developer stakeholder review of domain models.**
+**Default recommendation: Option A (OpenAPI Schema).** The domain model definition format is OpenAPI 3.1 Schema (JSON Schema). This provides an industry-standard, toolchain-rich foundation that serves both internal data modeling AND downstream API contracts. Option C (Code-First) is available for teams that prefer Python-native development — Pydantic v2+ can export JSON Schema for downstream consumption. Option B (Flat custom YAML) is no longer recommended for new workflows.
 
 ## 2. Domain Model Schema
 
-A Domain Model is defined in an independent YAML file:
+A Domain Model is defined in an OpenAPI 3.1-compliant YAML file:
 
+**Top-level structure:**
+
+```yaml
+openapi: "3.1.0"
+
+info:
+  title: <domain name>        # e.g., "Home Insurance Domain Model"
+  version: <semantic version>
+  description: <human-readable domain description>
+
+components:
+  schemas:                    # ⇐ entity definitions (OpenAPI Schema Objects)
+    EntityName:
+      type: object
+      required: [field1, field2]
+      properties:
+        field1: { type: string, ... }
+        field2:
+          $ref: "#/components/schemas/OtherEntity"  # cross-reference
+
+  x-state-bindings:           # ⇐ framework extension: maps states to entities
+    state_name:
+      entity: <schema_ref>    # which entity this state collects
+      fields: [field1, ...]   # fields active in this state (subset)
+      state_hint: <prompt>    # LLM context for extraction
 ```
-DomainModel {
-  domain:      string              // unique identifier (e.g., "home_insurance")
-  version:     string              // semantic version
-  description: string              // human-readable description of the domain
-  entities:    Map<string, EntityDef>  // data entities in this domain
-  states:      Map<string, StateDef>   // workflow states
-  transitions: TransitionDef[]         // allowed state transitions
-}
-```
+
+**Framework consumes:**
+- `components/schemas/` → auto-generate extraction rules, validation rules, LLM structured output schemas
+- `$ref` → resolve referenced schemas, expand compound fields into flat extraction targets
+- `x-state-bindings` → per-state field visibility, state-specific LLM prompts
 
 ### 2.1 File Location
 
 ```
 docs/domain-models/
-  home-insurance.yaml          # Primary: property, policy, claim entities
+  home-insurance.yaml          # Primary: HomeInsurance, UserInfo, Address, QuoteRequest, etc.
 ```
 
-### 2.2 Registration
-
-Domain models are registered globally. Workflows reference them by `domain` name:
-
-```yaml
-# workflow.yaml
-workflow: home_insurance_quote
-domain_model: home-insurance          # references docs/domain-models/home-insurance.yaml
-```
+For the complete concrete example, see [home-insurance.yaml](../../domain-models/home-insurance.yaml).
 
 ---
 

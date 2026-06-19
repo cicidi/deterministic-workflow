@@ -1,64 +1,287 @@
-domain: home_insurance
-version: 1.0.0
-description: "Home insurance quote, claim, and policy management"
+openapi: "3.1.0"
 
-entities:
-  property_info:
-    description: "Property information for home insurance"
-    fields:
-      property_type:
-        type: enum
-        values: [apartment, house, villa]
-        required: true
-        description: "Type of property being insured"
-        examples: ["I live in a house", "3-bedroom apartment", "my villa"]
-        deterministic_fallback:
-          keywords: [apartment, house, villa, condo, flat]
-        transform:
-          - type: normalize
-            config: { op: lowercase }
-          - type: lookup
-            config:
-              mapping:
-                condo: apartment
-                flat: apartment
-                "single family": house
-      address:
-        type: string
-        required: true
-        description: "Full address including street, city, province, postal code"
-        min_length: 5
-      postal_code:
-        type: string
-        required: true
-        description: "6-digit postal code"
-        pattern: "^[0-9]{6}$"
-        deterministic_fallback:
-          regex: "\\b[0-9]{6}\\b"
-          priority: regex_wins
-      building_age:
-        type: int
-        required: true
-        description: "Age of the building in years"
-        range: { min: 0, max: 200 }
-        examples: ["built in 2010", "15 years old", "brand new"]
-        transform:
-          - type: cast
-            config: { to: int }
-      floor_area:
-        type: float
-        required: false
-        description: "Floor area in square meters"
-        range: { min: 1, max: 100000 }
-        transform:
-          - type: cast
-            config: { to: float }
+info:
+  title: Home Insurance Domain Model
+  version: "2.0.0"
+  description: >
+    Data model for home insurance workflows (quote, claim, policy management).
+    Defined in OpenAPI 3.1 Schema format. Framework consumes these schemas to
+    auto-generate LLM extraction rules, field validators, and structured output
+    contracts. Reusable across workflows (quote, claims, renewals).
 
-states:
-  collect_property_info:
-    description: "Collect property details from the user"
-    entity: property_info
-    state_hint: >
-      The user is providing property information for a home insurance quote.
-      Address may include street, city, province, postal code.
-      Building age is in years. Brand new or newly built means age 0.
+components:
+  schemas:
+
+    # ─── Core Domain Entities ───
+
+    Address:
+      description: "Geographic address with structured sub-fields"
+      type: object
+      required: [street, city, province, postal_code]
+      properties:
+        street:
+          type: string
+          minLength: 3
+          description: "Street address including house/unit number"
+          examples: ["123 Main St", "Unit 5, 456 Elm Avenue"]
+        city:
+          type: string
+          minLength: 2
+          description: "City name"
+          examples: ["Toronto", "Vancouver"]
+        province:
+          type: string
+          enum: [ON, QC, BC, AB, MB, SK, NS, NB, NL, PE, NT, YT, NU]
+          description: "Province or territory code (2-letter)"
+        postal_code:
+          type: string
+          pattern: "^[A-Za-z][0-9][A-Za-z] ?[0-9][A-Za-z][0-9]$"
+          description: "Canadian postal code (e.g. M5V 2H1)"
+          examples: ["M5V 2H1", "V6B 4Y6"]
+        country:
+          type: string
+          default: "CA"
+          enum: [CA]
+          description: "Country code (ISO 3166-1 alpha-2)"
+
+    UserInfo:
+      description: "Policyholder or applicant personal information"
+      type: object
+      required: [first_name, last_name, email]
+      properties:
+        first_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: "First name"
+          examples: ["Alice"]
+        last_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: "Last name"
+          examples: ["Smith"]
+        email:
+          type: string
+          format: email
+          description: "Contact email address"
+        phone:
+          type: string
+          pattern: "^\\+?1?\\d{10}$"
+          description: "Phone number (10 digits, optional +1 prefix)"
+          examples: ["4165551234", "+16475559876"]
+        date_of_birth:
+          type: string
+          format: date
+          description: "Date of birth (YYYY-MM-DD)"
+
+    PropertyInfo:
+      description: "Property details for home insurance underwriting"
+      type: object
+      required: [property_type, building_age, floor_area]
+      properties:
+        property_type:
+          type: string
+          enum: [single_family, condo, townhouse, duplex, mobile_home]
+          description: "Type of residential property"
+          examples: ["single_family", "condo"]
+        building_age:
+          type: integer
+          minimum: 0
+          maximum: 200
+          description: "Age of the building in years (0 = brand new / under construction)"
+          examples: [5, 15, 0]
+        floor_area:
+          type: number
+          minimum: 1
+          maximum: 100000
+          description: "Total floor area in square feet"
+          examples: [1500, 3200]
+        construction_type:
+          type: string
+          enum: [wood_frame, masonry, steel, concrete, mixed]
+          description: "Primary construction material"
+        roof_type:
+          type: string
+          enum: [asphalt_shingle, metal, tile, flat, cedar_shake]
+          description: "Roof material type"
+        roof_age:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: "Age of roof in years"
+        has_alarm_system:
+          type: boolean
+          description: "Whether the property has a monitored alarm system"
+        has_sprinkler_system:
+          type: boolean
+          description: "Whether the property has an automatic sprinkler system"
+        occupancy_type:
+          type: string
+          enum: [owner_occupied, tenant_occupied, vacant, seasonal]
+          description: "Current occupancy status"
+
+    CoverageInfo:
+      description: "Insurance coverage selections requested by applicant"
+      type: object
+      required: [coverage_type, coverage_amount, deductible]
+      properties:
+        coverage_type:
+          type: string
+          enum: [basic, broad, comprehensive]
+          description: "Coverage tier"
+        coverage_amount:
+          type: number
+          minimum: 50000
+          maximum: 10000000
+          description: "Total coverage amount in CAD"
+          examples: [500000, 1000000]
+        deductible:
+          type: integer
+          enum: [500, 1000, 2500, 5000, 10000]
+          description: "Deductible amount in CAD"
+        liability_amount:
+          type: number
+          minimum: 100000
+          maximum: 5000000
+          description: "Personal liability coverage in CAD"
+        includes_flood_coverage:
+          type: boolean
+          default: false
+          description: "Whether flood coverage is included"
+        includes_earthquake_coverage:
+          type: boolean
+          default: false
+          description: "Whether earthquake coverage is included"
+
+    # ─── Aggregate Entity — Home Insurance Application ───
+
+    HomeInsurance:
+      description: >
+        Complete home insurance application. Composed of sub-entities:
+        policyholder info, property address, property details, coverage selection.
+      type: object
+      required: [owner, home_address, property_info, coverage_info]
+      properties:
+        owner:
+          $ref: "#/components/schemas/UserInfo"
+        home_address:
+          $ref: "#/components/schemas/Address"
+        property_info:
+          $ref: "#/components/schemas/PropertyInfo"
+        coverage_info:
+          $ref: "#/components/schemas/CoverageInfo"
+
+    # ─── Downstream API Request Schemas ───
+
+    QuoteRequest:
+      description: >
+        Downstream API request body for submitting a quote to an underwriting
+        engine or third-party quoting service. The agent constructs this from
+        the collected HomeInsurance entity and calls the downstream API.
+      type: object
+      required: [applicant, property, coverage, quote_id]
+      properties:
+        quote_id:
+          type: string
+          format: uuid
+          description: "Agent-generated unique identifier for this quote request"
+        applicant:
+          $ref: "#/components/schemas/UserInfo"
+        property:
+          type: object
+          required: [address, property_info]
+          properties:
+            address:
+              $ref: "#/components/schemas/Address"
+            property_info:
+              $ref: "#/components/schemas/PropertyInfo"
+        coverage:
+          $ref: "#/components/schemas/CoverageInfo"
+        requested_at:
+          type: string
+          format: date-time
+          description: "ISO 8601 timestamp of when the agent submitted the request"
+
+    QuoteResponse:
+      description: >
+        Downstream API response from the underwriting engine. Returned to the
+        agent for display or further processing.
+      type: object
+      required: [quote_id, provider, premium, status]
+      properties:
+        quote_id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          description: "Insurance provider name"
+        premium:
+          type: object
+          required: [monthly, annual, currency]
+          properties:
+            monthly:
+              type: number
+              minimum: 0
+              description: "Monthly premium in currency units"
+            annual:
+              type: number
+              minimum: 0
+              description: "Annual premium in currency units"
+            currency:
+              type: string
+              default: "CAD"
+              enum: [CAD, USD]
+        coverage_summary:
+          $ref: "#/components/schemas/CoverageInfo"
+        status:
+          type: string
+          enum: [approved, declined, manual_review_required, more_info_needed]
+        decline_reasons:
+          type: array
+          items:
+            type: string
+          description: "Reasons for decline, if status is 'declined'"
+        expires_at:
+          type: string
+          format: date-time
+          description: "Quote expiration timestamp"
+
+    # ─── State bindings (framework internal use) ───
+
+  x-state-bindings:
+    collect_policyholder_info:
+      entity: HomeInsurance
+      fields: [owner]
+      state_hint: >
+        The user is providing personal information for a home insurance quote.
+        Collect first name, last name, email, phone, and date of birth.
+    collect_property_address:
+      entity: HomeInsurance
+      fields: [home_address]
+      state_hint: >
+        The user is providing their property address. Collect street, city,
+        province, and postal code.
+    collect_property_info:
+      entity: HomeInsurance
+      fields: [property_info]
+      state_hint: >
+        The user is providing property details. Collect property type, building
+        age, floor area, construction type, roof type and age, and safety features
+        (alarm, sprinkler).
+    collect_coverage_info:
+      entity: HomeInsurance
+      fields: [coverage_info]
+      state_hint: >
+        The user is selecting coverage options. Collect coverage type, amount,
+        deductible, liability, and optional coverages (flood, earthquake).
+    submit_quote:
+      entity: QuoteRequest
+      state_hint: >
+        Agent assembles the QuoteRequest from collected HomeInsurance data and
+        calls the downstream underwriting API.
+    display_quote:
+      entity: QuoteResponse
+      state_hint: >
+        Agent received a QuoteResponse from the downstream API. Parse provider
+        name, premium amounts, status, and expiration for display to user.

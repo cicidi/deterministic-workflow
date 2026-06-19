@@ -14,7 +14,7 @@
 | 2026-06-17 | 0.2.0 | Refactor to interface-first: each interface with 2+ implementation options |
 | 2026-06-17 | 0.3.0 | Replace Python code blocks with YAML schemas; add errorNode cross-reference in Sections 2.2 & 2.3; add LLM JSON guardrail note in Section 3.2; add agentState.phase to StateContext in Section 3.3 |
 | 2026-06-17 | 0.4.0 | Section 2.3: add explicit LLM +1 extra retry rule for extract/transform nodes; fix Chinese text on line 35; Section 4.2 Option B: replace Python expressions with declarative predicate descriptions |
-| 2026-06-18 | 0.5.0 | Extract output contract: multi-intent payloads with ExtractionResult + ExtractedIntentPayload subclasses; payload guardrail validation (fieldName existence + non-empty); LLM audit record schema; intent combination validation cross-reference |
+| 2026-06-18 | 0.6.0 | Add §2.6 Per-State Extraction Scope: three-pass algorithm (targeted extraction → global history scan → user confirmation); scope resolved from domain model x-state-bindings; pass 1 uses state scope only, pass 2 scans all preceding states' fields, pass 3 requires user confirmation before merging | |
 
 ---
 
@@ -132,6 +132,105 @@ extraction_factory:
   # The factory reads the strategy name and instantiates the corresponding
   # implementation class, passing the YAML `config` as constructor arguments.
 ```
+
+### 2.6 Per-State Extraction Scope
+
+The Extract node operates on a **per-state scope** — not the full domain model. The framework constructs the extraction scope from the domain model's `x-state-bindings`:
+
+**Scope resolution:**
+
+```
+agentState.phase = "collect_property_address"
+       │
+       ▼
+x-state-bindings[collect_property_address]:
+  entity: HomeInsurance
+  fields: [home_address]                     ← only this sub-schema
+       │
+       ▼
+framework resolves $ref:
+  home_address → #/components/schemas/Address
+       │
+       ▼
+LLM receives ONLY Address schema:
+  { street, city, province, postal_code, country }
+  5 fields, not 30+
+```
+
+**Why not the full HomeInsurance schema (all 30+ fields):**
+
+| Approach | Tokens | Accuracy | Risk |
+|----------|--------|----------|------|
+| Full schema (all entities) | High | Low | LLM maps "Toronto" to email, phone to postal_code |
+| Per-state scope (only address fields) | Low | High | LLM knows exactly 5 fields to extract, no confusion |
+
+**Three-pass extraction algorithm:**
+
+The Extract node processes each user message in three stages:
+
+```
+Pass 1: Targeted extraction (current state scope)
+  Input: user message + scope schema (e.g., Address only)
+  Output: { extracted fields matching current scope }
+  Strategy: LLM extracts only fields in scope; ignores everything else
+
+Pass 2: Global lookup (historical scan)
+  Trigger: any required field still null after Pass 1
+  Input: full conversation history + ALL fields defined in x-state-bindings
+         for ALL states that precede this one in the phase sequence
+  Output: { candidate_fields } — fields found in history but not yet captured
+  Strategy: scan agentState.messages for candidate matches using LLM
+            with a relaxed schema that accepts partial/fuzzy matches
+
+Pass 3: Confirmation prompt (user verification)
+  Trigger: candidate_fields is non-empty after Pass 2
+  Input: candidate_fields + current scope
+  Output: confirmed_fields (user confirms) or rejected (user corrects)
+  Strategy: LLM generates a natural confirmation message:
+    "I noticed you mentioned your phone is 647-555-1234 earlier.
+     Is that correct?"
+  → user confirms → framework merges into collectedFields
+  → user corrects → framework re-extracts with correction
+```
+
+**Data flow through passes:**
+
+```
+User: "I live at 123 Main St"                  ← Pass 1 scope: address only
+  → Pass 1: { street: "123 Main St" }          ← extracted, merged
+  → city, province, postal_code still null      ← incomplete
+
+User: "Toronto, ON M5V 2H1"                    ← Pass 1 scope: address only
+  → Pass 1: { city: "Toronto", province: "ON", postal_code: "M5V 2H1" }
+  → Pass 2: skip (all required fields filled)
+
+State advances → collect_policyholder_info
+  Scope: { first_name, last_name, email, phone }
+
+User: "my email is alice@example.com"           ← Pass 1 scope: user info
+  → Pass 1: { email: "alice@example.com" }
+  → first_name, last_name, phone still null
+
+  → Pass 2: scan history → finds "my name is Alice" from 3 turns ago
+  → candidate: { first_name: "Alice" }
+
+  → Pass 3: framework generates:
+    "I noticed you mentioned your name is 'Alice' earlier.
+     Is that your first name?"
+  → user confirms → { first_name: "Alice" } merged
+```
+
+**Design decisions:**
+
+| Decision | Rationale |
+|----------|-----------|
+| Pass 1 uses only current state scope | Prevents cross-field confusion; minimal tokens |
+| Pass 2 scans full history with relaxed schema | Recovers data user gave in wrong state |
+| Pass 3 requires user confirmation | Never silently accept guessed data; deterministic safety |
+| Pass 2 scope = ALL preceding states' fields | Users can mention any earlier-state field; don't lose data |
+| Pass 2 scope ≠ future states' fields | Don't extract fields from states the user hasn't reached yet |
+
+Thus the Extract node is not a single LLM call — it is a **three-pass orchestration** driven by the per-state scope defined in the domain model's `x-state-bindings`.
 
 ---
 
