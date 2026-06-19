@@ -246,6 +246,10 @@ intents:
 
 ### 2.4 Classification Strategy
 
+The framework supports two classification strategies:
+
+#### Option A: LLM-First (Default)
+
 The framework uses **LLM-first classification**. No keyword fallback — if the LLM cannot classify with sufficient confidence, the framework asks the user to clarify.
 
 | Dimension | Behavior |
@@ -254,6 +258,29 @@ The framework uses **LLM-first classification**. No keyword fallback — if the 
 | **Confidence Threshold** | Configurable, default `0.7`. Below threshold → `unrecognized_intent` → clarification |
 | **LLM Failure** | Gateway retries within budget. Exhausted → `unrecognized_intent` → clarification |
 | **Temperature** | 0 (deterministic output) |
+
+#### Option B: Cascade (Keyword-First, LLM-Second)
+
+For cost-constrained deployments, the classifier runs a deterministic keyword/regex match first. If the keyword match has confidence >= 0.95, the result is returned immediately (zero LLM cost). If below threshold or ambiguous, the LLM-first pipeline is invoked as fallback.
+
+| Strengths | Reduces LLM cost for obvious intents (simple commands, greetings); deterministic first pass is fast and auditable |
+|-----------|----------------------------------------------------------------------------------------------------------------|
+| Weaknesses | Keyword list must be maintained; new intents require LLM fallback; adds latency for ambiguous cases |
+| Best for | High-volume production with many simple/repetitive user interactions |
+
+#### Comparison Matrix
+
+| Dimension | Option A (LLM-First) | Option B (Cascade) |
+|-----------|---------------------|---------------------|
+| **Primary classifier** | LLM (always) | Keyword/Regex (first) |
+| **Fallback** | `unrecognized_intent` → clarification | LLM (second) → `unrecognized_intent` if both fail |
+| **LLM cost** | 1 call per utterance | 0 for obvious intents ($0); 1 call for ambiguous/new |
+| **Latency (obvious)** | ~500ms (LLM round-trip) | <5ms (keyword match) |
+| **Latency (ambiguous)** | ~500ms | ~505ms (keyword miss + LLM) |
+| **Keyword maintenance** | None required | Required for each intent |
+| **Auditability** | LLM reasoning trail | Keyword match is fully deterministic |
+| **Best for** | Low-volume, high-complexity (e.g., internal tools) | High-volume, repetitive (e.g., customer-facing chat) |
+| **New intent handling** | Automatic via LLM understanding | Requires LLM fallback + keyword update |
 
 The full classification flow is specified in §3.
 
@@ -267,7 +294,7 @@ Intent classification is not a single-message operation. The LLM prompt must inc
 
 The framework includes the **last 3 user messages + last 3 agent messages** as context in every classification call. This provides enough history to disambiguate short responses without bloating the prompt.
 
-> **Note:** Intent classification input also includes `agentState.phase` (e.g., `quoting`, `claims`, `onboarding`). The current workflow phase provides state-aware context that helps the classifier disambiguate intents — for example, "I want to change that" in the `quoting` phase likely refers to modifying a quote, while in the `claims` phase it likely refers to updating a claim.
+> **Note:** Intent classification input also includes `agentState.phase` (e.g., `collect_property_info`, `file_claim`, `collect_coverage_needs`). The current workflow phase provides state-aware context that helps the classifier disambiguate intents — for example, "I want to change that" in the `collect_property_info` phase likely refers to modifying property details, while in the `file_claim` phase it likely refers to updating claim information.
 
 ### 3.2 Edge Case Coverage
 

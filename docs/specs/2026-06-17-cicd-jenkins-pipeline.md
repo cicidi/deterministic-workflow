@@ -171,9 +171,9 @@ Runs evals against the changed workflow using real LLM calls. Triggered only on 
     failure_action: stop_pipeline
     gates:
       - metric: "intent_accuracy"
-        threshold: ">= 0.90"
+        threshold: ">= 0.95"
       - metric: "goal_check_pass_rate"
-        threshold: ">= 0.85"
+        threshold: ">= 0.95"
       - metric: "schema_violation_rate"
         threshold: "<= 0.05"
 ```
@@ -392,9 +392,9 @@ pipeline:
           - publish_junit: "results/eval-real-results.xml"
       gates:
         - metric: "intent_accuracy"
-          threshold: ">= 0.90"
+          threshold: ">= 0.95"
         - metric: "goal_check_pass_rate"
-          threshold: ">= 0.85"
+          threshold: ">= 0.95"
         - metric: "schema_violation_rate"
           threshold: "<= 0.05"
       on_failure: stop_pipeline
@@ -557,14 +557,14 @@ eval:
 
   eval_gates:
     global:
-      intent_accuracy: ">= 0.90"
-      goal_check_pass_rate: ">= 0.85"
+      intent_accuracy: ">= 0.95"
+      goal_check_pass_rate: ">= 0.95"
       schema_violation_rate: "<= 0.05"
     
     per_workflow:
       home_insurance_quote:
-        extraction_f1: ">= 0.88"
-        routing_accuracy: ">= 0.92"
+        extraction_f1: ">= 0.95"
+        routing_accuracy: ">= 0.95"
 ```
 
 ### 4.2 Mock LLM Strategy

@@ -96,8 +96,8 @@ state_reducers:
 
 | Reducer Strategy | Behavior |
 |-----------------|----------|
-| `last_write_wins` | Default. Second update overwrites first. Safe for non-overlapping fields. |
-| `conflict_detect` | Raise `StateConflictError` if same key is written by two sources in the same tick. |
+| `conflict_detect` | **Recommended default for regulated industries.** Rejects the update and routes to `errorNode` if same key is written by two sources in the same tick. Raises `StateConflictError`. |
+| `last_write_wins` | Second update overwrites first. Safe for non-overlapping fields. |
 | `append` | Append to list (for messages, audit log). |
 | `merge` | Deep merge dict keys where neither source writes the same leaf key. |
 
@@ -412,6 +412,7 @@ agentState = {
     collectedFields: { ... },                   // accumulated entity data
     ...
 }
+// See [Domain Model §10.1](./2026-06-17-domain-model-design.md) for the canonical AgentState schema.
 ```
 
 **Flow example:**
@@ -711,9 +712,11 @@ Errors are categorized for **audit logging**, not for separate routing paths. Th
 | `permission_error` | Unauthorized tool call, forbidden transition |
 | `unrecoverable_error` | Corrupted state, missing required entity |
 
-### 6.5 errorNode Interface
+### 6.5 errorNode Interface (Canonical Definition)
 
-The `errorNode` is a unified error handling node that receives all errors from all nodes. Its contract:
+The `errorNode` is a unified error handling node that receives all errors from all nodes — this is the single source of truth. All other specs that reference errorNode strategies MUST cross-reference this section.
+
+Its contract:
 
 ```yaml
 # errorNode contract
@@ -822,12 +825,14 @@ permission:
 
 ### 7.3 Tool Classification
 
+> **Note:** The canonical `ToolMeta.type` enum (`api | mcp | command | llm | a2a | sdk`) is defined in [HLD §4.4](./2026-06-16-deterministic-workflow-framework-design.md). This section extends it with routing-specific detail.
+
 Every tool (API, MCP server, command, LLM call) has metadata:
 
 ```yaml
 tools:
   calculate_premium_api:
-    type: api | mcp | command | llm | a2a | sdk
+    type: api
     access_level: read
     description: "Calculate insurance premium based on property + coverage data"
     endpoint: POST /api/v1/premium/calculate
@@ -858,13 +863,13 @@ tools:
 
 ### 7.4 Tool Interface
 
-Every tool conforms to a standard contract. The framework checks permissions before invoking the tool's execution function.
+Every tool conforms to a standard contract (defined in [HLD §4.4](./2026-06-16-deterministic-workflow-framework-design.md)). The framework checks permissions before invoking the tool's execution function.
 
 ```yaml
-# Tool contract (interface)
+# Tool contract (interface) — type enum: see HLD §4.4
 Tool:
   name: string                                        # unique tool identifier
-  type: api | mcp | command | llm | a2a | sdk
+  type: ToolMeta.type                                 # canonical enum in HLD §4.4
   access_level: read | write | sensitive_data_read | dangerous_operation_write
   metadata: ToolMeta                                  # endpoint, timeout, approval (see §7.3)
   # execute: (params: object, context: ExecutionContext) → ToolResult

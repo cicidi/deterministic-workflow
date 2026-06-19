@@ -239,3 +239,4 @@ agents:
 - [RAG Interface](./2026-06-18-rag-interface.md) — ReadOnlyAgent's primary backend
 - [State Machine Design](./2026-06-16-state-machine-design.md) — agent dispatch and transition orchestration
 - [Tool Ecosystem](./2026-06-17-tool-ecosystem.md) — per-agent tool allowlists
+- [LLM Gateway](./2026-06-17-llm-gateway.md) — agent LLM calls route through gateway

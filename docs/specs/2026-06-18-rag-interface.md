@@ -331,3 +331,4 @@ Each adapter is a thin wrapper that translates framework `Protocol` calls to the
 - [High-Level Design](./2026-06-16-deterministic-workflow-framework-design.md) — parent document
 - [LLM Gateway](./2026-06-17-llm-gateway.md) — LLM invocation (used by RAG pipeline for generation)
 - [Response Generation Layer](./2026-06-17-response-generation-layer-design.md) — primary consumer of RAG
+- [Agent Types](./2026-06-18-agent-types.md) — ReadOnlyAgent uses RAG as primary backend

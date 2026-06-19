@@ -14,7 +14,7 @@
 | 2026-06-17 | 0.2.0 | Refactor to interface-first: each interface with 2+ implementation options |
 | 2026-06-17 | 0.3.0 | Replace Python code blocks with YAML schemas; add errorNode cross-reference in Sections 2.2 & 2.3; add LLM JSON guardrail note in Section 3.2; add agentState.phase to StateContext in Section 3.3 |
 | 2026-06-17 | 0.4.0 | Section 2.3: add explicit LLM +1 extra retry rule for extract/transform nodes; fix Chinese text on line 35; Section 4.2 Option B: replace Python expressions with declarative predicate descriptions |
-| 2026-06-18 | 0.6.0 | Add §2.6 Per-State Extraction Scope: three-pass algorithm (targeted extraction → global history scan → user confirmation); scope resolved from domain model x-state-bindings; pass 1 uses state scope only, pass 2 scans all preceding states' fields, pass 3 requires user confirmation before merging | |
+| 2026-06-18 | 0.6.0 | Add §2.6 Per-State Extraction Scope: parallel two-LLM extraction (LLM 1: current state scope; LLM 2: full OpenAPI schema), both on last 3+3 message window; merge + user confirmation for cross-state field recovery | |
 
 ---
 
@@ -51,40 +51,52 @@ The extraction pipeline consists of three node interfaces. Each interface define
 
 | Interface | Responsibility |
 |-----------|----------------|
-| **Extract** | Pull raw entities from user utterance |
+| **Extract** | Pull raw entities from user utterance via two parallel LLM calls (narrow + broad scope), then merge & resolve |
 | **Validate** | Check entities against rules; produce pass/fail + errors |
 | **Transform** | Type coercion, normalization, data completion/correction |
 
 ### 2.2 Flow
 
 ```
-User Input ──→ [Extract] ──→ entities_raw
-                  │
-                  ↓
-             [Validate] ──(all pass)──→ emit result to Layer 2
-                  │
-               (fail)
-                  │
-                  ↓
-             [Transform] ──(success)──→ loop back to [Validate]
-                  │
-               (fail: max attempts exhausted or unrecoverable error)
-                  │
-                  ↓
-             on_transform_failure node → ultimately routes to errorNode (see Routing & Execution spec Section 6)
+User Input ──→ [Extract] ──────────→ entities_raw
+                  │                      │
+                  ├─ LLM 1: narrow scope │
+                  │  (current state)     │  merge
+                  │                      ├─→ resolve
+                  └─ LLM 2: broad scope  │  (confidence-based)
+                     (full schema)       │
+                                         ↓
+                                    [Validate] ──(all pass)──→ emit result to Layer 2
+                                         │
+                                      (fail)
+                                         │
+                                         ↓
+                                    [Transform] ──(success)──→ loop back to [Validate]
+                                         │
+                                      (fail: max attempts exhausted or unrecoverable error)
+                                         │
+                                         ↓
+                                    on_transform_failure node → ultimately routes to errorNode (see Routing & Execution spec Section 6)
 ```
 
 ### 2.3 Retry Gating
 
-Each extraction node declares `max_transform_attempts` (default: 2). The Validate→Transform→Validate loop runs up to that limit. **LLM-based extraction and transform nodes receive +1 extra retry beyond `max_transform_attempts`** (to compensate for LLM non-determinism), matching the framework-wide rule that all LLM nodes get +1 retry. Non-LLM nodes retry exactly `max_transform_attempts` times. On the final attempt, if Validate still fails, the pipeline routes to the configured `on_transform_failure` node, which ultimately routes to `errorNode` (see Routing & Execution spec Section 6).
+Each extraction node declares `max_transform_attempts` (default: 2). The Validate→Transform→Validate loop runs up to that limit. **The Extract node's two parallel LLM calls each receive +1 extra retry beyond `max_transform_attempts`** (to compensate for LLM non-determinism), matching the framework-wide rule that all LLM nodes get +1 retry. Non-LLM nodes retry exactly `max_transform_attempts` times. On the final attempt, if Validate still fails, the pipeline routes to the configured `on_transform_failure` node, which ultimately routes to `errorNode` (see Routing & Execution spec Section 6).
 
 ### 2.4 Graph Topology
 
-The three interfaces are **independent nodes** in the LangGraph — not a hidden macro-node.
+The three interfaces are **independent nodes** in the LangGraph — not a hidden macro-node. The Extract node internally orchestrates two parallel LLM calls before emitting to Validate.
+
+> **Rationale:** Running narrow-scope and broad-scope extraction in parallel keeps latency equal to a single LLM call, at 2x token cost. The narrow scope (current state only) prevents cross-intent field confusion; the broad scope (full history scan) recovers data given in wrong states. Cross-validation at merge time eliminates hallucinations from either LLM, significantly improving accuracy over a single-pass approach. Token cost is low (small model, small schemas) — latency not token cost is the binding constraint, making parallel extraction the right accuracy-for-cost trade-off.
 
 ```yaml
 nodes:
-  - {step}_extract
+  - {step}_extract:
+      sub_nodes:
+        - {step}_extract_narrow   # LLM 1: current state scope
+        - {step}_extract_broad     # LLM 2: full OpenAPI schema
+      strategy: parallel           # both run concurrently
+      merge: confidence_based      # resolve conflicts by confidence matrix
   - {step}_validate
   - {step}_transform
   - {next_step}
@@ -98,49 +110,14 @@ edges:
   {step}_transform  → {on_failure}              (transform failed)
 ```
 
-### 2.5 Interface Definition
-
-The framework exposes nodes through a strategy-based factory pattern. Each extraction node (extract / validate / transform) conforms to a shared contract:
-
-```yaml
-# Extraction Node Protocol (interface contract)
-# Each node receives the full GraphState, returns updated GraphState.
-# Nodes are stateless — all context lives in the state graph.
-extraction_node_protocol:
-  signature: (GraphState) → GraphState
-  description: >
-    Execute this node against the current LangGraph state.
-    The node reads from and writes to the state graph.
-    No side effects outside of state mutation.
-```
-
-The framework wires nodes into the graph via a factory configured per-node in YAML:
-
-```yaml
-# ExtractionFactory configuration (per-node in workflow YAML)
-extraction_factory:
-  # Strategy selection drives which implementation is instantiated
-  extract_strategy: hybrid        # llm_primary | deterministic | hybrid
-  validate_strategy: native       # durable_rules | business_rules | pyknow | native | pydantic
-  transform_strategy: deterministic  # deterministic | llm_assisted | hybrid
-
-  # Each factory method signature:
-  #   create_extract(strategy: string, config: dict) → ExtractionNode
-  #   create_validate(strategy: string, config: dict) → ExtractionNode
-  #   create_transform(strategy: string, config: dict) → ExtractionNode
-  #
-  # The factory reads the strategy name and instantiates the corresponding
-  # implementation class, passing the YAML `config` as constructor arguments.
-```
-
-### 2.6 Per-State Extraction Scope
+### 2.5 Per-State Extraction Scope
 
 The Extract node operates on a **per-state scope** — not the full domain model. The framework constructs the extraction scope from the domain model's `x-state-bindings`:
 
 **Scope resolution:**
 
 ```
-agentState.phase = "collect_property_address"
+agentState.phase = "collect_property_info"
        │
        ▼
 x-state-bindings[collect_property_address]:
@@ -152,131 +129,163 @@ framework resolves $ref:
   home_address → #/components/schemas/Address
        │
        ▼
-LLM receives ONLY Address schema:
+LLM 1 receives ONLY Address schema:
   { street, city, province, postal_code, country }
   5 fields, not 30+
 ```
 
-**Why not the full HomeInsurance schema (all 30+ fields):**
+**Why not the full HomeInsurance schema (all 30+ fields) for LLM 1:**
 
 | Approach | Tokens | Accuracy | Risk |
 |----------|--------|----------|------|
 | Full schema (all entities) | High | Low | LLM maps "Toronto" to email, phone to postal_code |
 | Per-state scope (only address fields) | Low | High | LLM knows exactly 5 fields to extract, no confusion |
 
-**Three-pass extraction algorithm:**
+**Two-pass parallel extraction algorithm:**
 
-The Extract node processes each user message in three stages:
+Two LLM calls run in parallel on every user turn. They share the same input window but different target schemas:
 
 ```
-Pass 1: Targeted extraction (current state scope)
-  Input: user message + scope schema (e.g., Address only)
+User Input + Last 3 user messages + Last 3 agent messages
+    │
+    ├──→ LLM 1: Narrow Extraction (parallel)
+    │      Target schema: current state's x-state-bindings fields only
+    │      Purpose: extract fields for the current step with high precision
+    │
+    └──→ LLM 2: Broad Scanning (parallel)
+           Target schema: FULL OpenAPI components/schemas/ (all entities, all fields)
+           Purpose: catch any field the user mentioned that belongs to ANY entity
+```
+
+```
+Pass 1 (LLM 1): Focused extraction — current state scope
+  Input: last 3 user + 3 agent messages + current state's scope schema
+  Target: only fields in x-state-bindings for current phase
   Output: { extracted fields matching current scope }
   Strategy: LLM extracts only fields in scope; ignores everything else
 
-Pass 2: Global lookup (historical scan)
-  Trigger: any required field still null after Pass 1
-  Input: full conversation history + ALL fields defined in x-state-bindings
-         for ALL states that precede this one in the phase sequence
-  Output: { candidate_fields } — fields found in history but not yet captured
-  Strategy: scan agentState.messages for candidate matches using LLM
-            with a relaxed schema that accepts partial/fuzzy matches
+Pass 1 (LLM 2): Broad scanning — full domain scope (runs in parallel with LLM 1)
+  Input: last 3 user + 3 agent messages + FULL OpenAPI components/schemas/
+  Target: ALL fields across ALL entities in the domain model
+  Output: { candidate_fields } — any field found in the recent window
+  Strategy: LLM scans with a relaxed schema that accepts partial/fuzzy matches;
+            captures fields the user gave out of order or ahead of the current phase
 
-Pass 3: Confirmation prompt (user verification)
-  Trigger: candidate_fields is non-empty after Pass 2
-  Input: candidate_fields + current scope
-  Output: confirmed_fields (user confirms) or rejected (user corrects)
-  Strategy: LLM generates a natural confirmation message:
-    "I noticed you mentioned your phone is 647-555-1234 earlier.
-     Is that correct?"
-  → user confirms → framework merges into collectedFields
-  → user corrects → framework re-extracts with correction
-```
-
-**Data flow through passes:**
-
-```
-User: "I live at 123 Main St"                  ← Pass 1 scope: address only
-  → Pass 1: { street: "123 Main St" }          ← extracted, merged
-  → city, province, postal_code still null      ← incomplete
-
-User: "Toronto, ON M5V 2H1"                    ← Pass 1 scope: address only
-  → Pass 1: { city: "Toronto", province: "ON", postal_code: "M5V 2H1" }
-  → Pass 2: skip (all required fields filled)
-
-State advances → collect_policyholder_info
-  Scope: { first_name, last_name, email, phone }
-
-User: "my email is alice@example.com"           ← Pass 1 scope: user info
-  → Pass 1: { email: "alice@example.com" }
-  → first_name, last_name, phone still null
-
-  → Pass 2: scan history → finds "my name is Alice" from 3 turns ago
-  → candidate: { first_name: "Alice" }
-
-  → Pass 3: framework generates:
-    "I noticed you mentioned your name is 'Alice' earlier.
-     Is that your first name?"
-  → user confirms → { first_name: "Alice" } merged
+Pass 2: Merge & Resolve
+  Merge: union of LLM 1 output + LLM 2 candidate_fields, deduplicated by field name
+  
+  Conflict resolution (same field extracted by both LLMs):
+    Each field carries a confidence score from the LLM that extracted it.
+    
+    ┌─ LLM 1 confidence ≥ 0.7 AND LLM 1 confidence ≥ LLM 2 confidence?
+    │      → use LLM 1's value (narrow scope is more reliable)
+    │
+    ├─ LLM 1 confidence < 0.7 AND LLM 2 confidence > 0.7?
+    │      → use LLM 2's value (broad scope caught it better)
+    │
+    └─ Otherwise (both < 0.7, or both < threshold)?
+           → mark field as UNRESOLVED, route to errorNode
+    
+    Resolution matrix:
+    ┌─────────────────┬──────────────────────┬──────────────────────┐
+    │                 │ LLM 2 ≥ 0.7           │ LLM 2 < 0.7          │
+    ├─────────────────┼──────────────────────┼──────────────────────┤
+    │ LLM 1 ≥ 0.7     │ Use LLM 1 (if conf1  │ Use LLM 1            │
+    │                 │  ≥ conf2) or LLM 2   │                      │
+    ├─────────────────┼──────────────────────┼──────────────────────┤
+    │ LLM 1 < 0.7     │ Use LLM 2            │ UNRESOLVED → error   │
+    └─────────────────┴──────────────────────┴──────────────────────┘
+  
+  Confirmation (LLM 2-only fields):
+    Fields found ONLY by LLM 2 (not in LLM 1 output) require user confirmation:
+      "I noticed you mentioned your phone is 647-555-1234 earlier. Is that correct?"
+    → user confirms → framework merges into collectedFields
+    → user corrects → framework re-extracts with correction
+  
+  Fields found ONLY by LLM 1 (not in LLM 2 output) are accepted directly
+  — no confirmation needed for fields extracted in the current state scope.
 ```
 
 **Design decisions:**
 
 | Decision | Rationale |
 |----------|-----------|
-| Pass 1 uses only current state scope | Prevents cross-field confusion; minimal tokens |
-| Pass 2 scans full history with relaxed schema | Recovers data user gave in wrong state |
-| Pass 3 requires user confirmation | Never silently accept guessed data; deterministic safety |
-| Pass 2 scope = ALL preceding states' fields | Users can mention any earlier-state field; don't lose data |
-| Pass 2 scope ≠ future states' fields | Don't extract fields from states the user hasn't reached yet |
+| LLM 1 uses current state scope only | Prevents cross-field confusion; minimal tokens; high precision |
+| LLM 2 uses FULL OpenAPI schema | Catches fields user mentioned out of order; recovers data from any entity |
+| Both LLMs run in parallel | No added latency — LLM 2 runs concurrently, not sequentially |
+| Input window: last 3+3 messages | Keeps token cost bounded; avoids scanning entire history |
+| LLM 2 uses relaxed matching | Accepts partial/fuzzy matches; the user may have phrased things differently |
+| Conflict: prefer LLM 1 when both have high confidence | Narrow scope is more reliable; LLM 1's focused prompt yields better results |
+| Conflict: fallback to LLM 2 when LLM 1 is uncertain | LLM 2's broad scan may catch what LLM 1's narrow lens misses |
+| Both low confidence → errorNode | Never silently accept uncertain data; deterministic safety |
+| LLM 1-only fields accepted without confirmation | Fields in current state scope are purposefully extracted — trust them |
+| LLM 2-only fields require user confirmation | Fields found out-of-context may be misattributed — verify with user |
 
-Thus the Extract node is not a single LLM call — it is a **three-pass orchestration** driven by the per-state scope defined in the domain model's `x-state-bindings`.
+Thus the Extract node is not a single LLM call — it is a **parallel two-LLM orchestration** driven by the per-state scope defined in the domain model's `x-state-bindings`, followed by a merge-resolve-and-confirm step.
 
 ---
 
 ## 3. Extract Interface
 
+The Extract node runs **two LLM calls in parallel**, then merges results via confidence-based resolution.
+
 ### 3.1 Contract
 
 ```
-Input:
-  user_input:           string              // raw user utterance
-  conversation_context: ContextWindow        // last N messages
-  intent_payloads:      ClassifiedIntent[]    // from intent classification (Section 4 of intent spec)
-  extraction_rules:     ExtractionRuleSchema[] // what fields to look for
-  state_context:        StateContext          // FSM state name + hint
+Extract Narrow (LLM 1):
+  Input:
+    user_input:           string              // raw user utterance
+    conversation_context: ContextWindow        // last 3 user + 3 agent messages
+    intent_payloads:      ClassifiedIntent[]    // from intent classification
+    extraction_rules:     ExtractionRuleSchema[] // current state's x-state-bindings fields only
+    state_context:        StateContext          // FSM state name + hint
 
-Output:
-  result: ExtractionResult  // msg_id + typed payloads per intent
+  Output:
+    result: ExtractionResult  // narrow-scope extracted fields with confidence scores
+
+Extract Broad (LLM 2) — runs in parallel:
+  Input:
+    user_input:           string              // raw user utterance
+    conversation_context: ContextWindow        // same last 3+3 window
+    full_schema:          OpenAPISchema        // ALL components/schemas/ across all entities
+    state_context:        StateContext          // FSM state name (for context, not scope)
+
+  Output:
+    result: ExtractionResult  // broad-scope candidate fields with confidence scores
+
+Merge:
+  union of both results, resolved per-field by confidence matrix (see §2.6)
+  → ExtractionResult with merged payloads
 ```
 
 ```
 ExtractionResult {
   msg_id:   string                      // unique per message (auto-generated on receipt)
-  payloads: ExtractedIntentPayload[]    // one per resolved intent; may be empty for skip-intents
+  payloads: ExtractedIntentPayload[]    // merged from narrow + broad, resolved by confidence
 }
 ```
 
-The Extract node receives the `ClassifiedIntent[]` from the classifier and produces typed `ExtractedIntentPayload` subclasses. Each intent maps to its corresponding payload class via `INTENT_PAYLOAD_MAP` (see Section 3.7).
+The Extract node receives the `ClassifiedIntent[]` from the classifier, runs both LLMs in parallel, merges results, and produces typed `ExtractedIntentPayload` subclasses. Each intent maps to its corresponding payload class via `INTENT_PAYLOAD_MAP` (see Section 3.7).
 
 ### 3.2 Implementation Options
 
 #### Option A: LLM with Structured Output (Recommended)
 
-Use LLM with structured output (JSON mode / function calling) to extract all fields at once. Relies on the LLM's natural language understanding to handle varied phrasings, multi-turn context, and implicit references.
+Two LLM calls run in parallel per extraction — one with narrow scope (current state fields), one with broad scope (full domain schema). Results are merged via confidence-based resolution.
 
 | Aspect | Detail |
 |--------|--------|
-| Strengths | Handles varied phrasings; understands implicit references; multi-turn aware |
-| Weaknesses | LLM cost/latency; non-deterministic; can hallucinate values |
+| Strengths | Handles varied phrasings; understands implicit references; multi-turn aware; parallel execution hides LLM 2 latency |
+| Weaknesses | 2x LLM cost per turn; non-deterministic; can hallucinate values |
 | Best for | Open-ended forms, free-text fields, ambiguous inputs |
 | Dependencies | LLM provider (OpenAI, Anthropic, local) |
-| Fallback | On LLM failure → return partial results with lower confidence |
+| Fallback | On LLM failure → return partial results with lower confidence; merge still proceeds with available results |
 
 **Prompt construction:**
-- System prompt: `extraction_rules` descriptions + `state_context.state_hint`
-- Context: last N messages from `conversation_context`
-- Output format: JSON with field_name → value, plus `reasoning`
+- LLM 1 system prompt: `extraction_rules` descriptions + `state_context.state_hint` (narrow scope)
+- LLM 2 system prompt: full OpenAPI `components/schemas/` + relaxed matching instruction (broad scope)
+- Context: last 3 user + 3 agent messages from `conversation_context` (same for both)
+- Output format: JSON with `{ field_name: { value, confidence } }` per field
 - Temperature: 0
 - **Guardrail**: All LLM-based extraction output is JSON. The framework enforces output validation guardrails (schema check, field presence, type coercion) before the result enters the extraction pipeline.
 
@@ -290,7 +299,7 @@ StateContext {
   state_description: string    // what this state expects
   state_hint:        string    // disambiguation instruction from node metadata
   required_fields:   string[]  // list of field names
-  phase:             string    // current agentState.phase (e.g., "collecting", "validating", "confirming")
+  phase:             string    // current agentState.phase (e.g., "collect_property_info", "validate_property_info", "confirm_details")
 }
 ```
 
@@ -587,14 +596,16 @@ ExtractionRuleSchema {
 ValidationRuleSchema {
   field:     string                // field name
   required?: boolean
-  type?:     "int" | "float" | "string" | "date" | "boolean" | "enum"
-  enum?:     string[]
+  type?:     "integer" | "number" | "string" | "boolean"
+  format?:   "date"                // when type is "string" and format is "date"
+  enum?:     string[]              // enum constraint on a string field (not a type)
   range?:    { min?: number, max?: number }
   regex?:    string
-  length?:   { min?: int, max?: int }
+  length?:   { min?: integer, max?: integer }
   custom?:   string                // registered function name
 }
 ```
+> **Note:** Types follow JSON Schema conventions (see [Domain Model §2](./2026-06-17-domain-model-design.md)). Validation rules are derived from entity schema properties per AD 29.
 
 ### 6.3 Transform Rule Schema
 

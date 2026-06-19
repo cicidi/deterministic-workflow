@@ -265,6 +265,8 @@ checkpoint:
       tool_calls: array               # tool invocation records
 ```
 
+The canonical AgentState schema is defined in [Domain Model §10.1](./2026-06-17-domain-model-design.md).
+
 ### 4.3 Per-Environment Checkpoint Backend
 
 ```yaml

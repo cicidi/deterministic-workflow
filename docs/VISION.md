@@ -42,6 +42,8 @@ The downstream skill loads these specs and, through guided Q&A, helps a develope
 - [x] Response Generation (goal setting, response modes, goal check, PII scrubbing, loop-back)
 - [x] Tool Ecosystem (LangFlow, LangGraph CLI, LangSmith, rule engines, MCP servers)
 - [x] Environment Configuration (dev / e2e / prod)
+- [x] RAG Interface
+- [x] Agent Types
 
 ### 3.2 Spec Content Requirements
 
@@ -67,7 +69,7 @@ Every spec document MUST:
 
 ### 4.1 Never
 
-- ❌ **No implementation code yet.** Spec-first. Schemas + samples only. Implementation deferred.
+- ❌ **No implementation code yet.** Spec-first. Schemas + sample code only — sample code is illustrative (shows shape/intent), not production-ready implementation. Full implementation deferred.
 - ❌ **No Framework API spec.** 7 specs define all interfaces. AI can derive assembly from them. No need for a separate "how to boot" doc.
 - ❌ **No premature solving.** Open questions are deferred for architect-level discussions during adoption.
 - ❌ **No single-industry lock-in.** Framework is generic — configurable for any regulated industry.
@@ -113,7 +115,8 @@ Every spec document MUST:
 | 27 | 2026-06-18 | Declarative field mutations (on_entry/on_exit/on_take.set_field) | Every agentState field write is declared in YAML via lifecycle hooks — no hidden code mutations. set_field supports literals, function calls (now(), uuid4()), and field references. Execution order: on_exit → guard eval → on_take → checkpoint → on_entry → main executor. Simple assignments stay in YAML; complex computation stays in Python action functions via output_schema merger. |
 | 28 | 2026-06-18 | SCXML as semantic standard | W3C SCXML Recommendation adopted as the state machine semantic model. YAML workflow definition is a YAML expression of SCXML semantics; no XML file is generated. Full SCXML ↔ YAML mapping documented in state-machine §1.0. SCXML provides compliance/audit reference for regulated industries; LangGraph is the runtime; YAML is the canonical artifact. |
 | 29 | 2026-06-18 | OpenAPI 3.1 Schema as data model standard | Domain model entities defined using OpenAPI Schema Objects (JSON Schema) instead of custom FieldDef format. $ref enables schema composition (HomeInsurance aggregates UserInfo, Address, PropertyInfo, CoverageInfo). Industry-standard tooling: validators, code generators, Swagger UI. Downstream API contracts (QuoteRequest, QuoteResponse) defined in same format. x-state-bindings maps states to entity fields for per-state extraction scope. |
-| 30 | 2026-06-18 | Three-pass per-state extraction scope | Extract node uses per-state scope (from domain model x-state-bindings) instead of full domain schema. Pass 1: targeted extraction (current state schema only, minimal tokens, no field confusion). Pass 2: global history scan (all preceding states' fields, recovers data given in wrong state). Pass 3: user confirmation (never silently merge guessed data). Scope never includes future states' fields. |
+| 30 | 2026-06-18 | Multi-pass per-state extraction scope | Extract node uses per-state scope (from domain model x-state-bindings) instead of full domain schema. Pass 1: two parallel LLMs (narrow scope + broad scope). Pass 2: merge, cross-validate, and user confirmation (never silently merge guessed data). Scope never includes future states' fields. |
+| 31 | 2026-06-18 | Progressive model escalation on LLM failure | LLM Gateway escalates from small → medium → large model after 2+ consecutive failures per tier. Balances cost efficiency (small model default) with reliability (large model fallback). Configurable per environment: disabled in dev (fail fast), 2-tier in e2e, 3-tier in prod. Supports 3 implementation options: Fixed Tiers, Provider-Cascade, Dynamic Routing. |
 
 ---
 
@@ -230,7 +233,9 @@ docs/specs/
 ├── 2026-06-17-observability-monitoring.md                   ← child of HLD
 ├── 2026-06-17-cicd-jenkins-pipeline.md                      ← child of HLD
 ├── 2026-06-17-rate-limiting.md                              ← child of HLD
-└── 2026-06-17-widget-templates.md                           ← child of HLD
+├── 2026-06-17-widget-templates.md                           ← child of HLD
+├── 2026-06-18-rag-interface.md                           ← child of HLD
+└── 2026-06-18-agent-types.md                             ← child of HLD
 
 docs/examples/home-insurance/
 ├── README.md

@@ -12,6 +12,7 @@
 | 2026-06-17 | 0.1.0 | Initial environment config spec: dev, e2e, prod |
 | 2026-06-17 | 0.2.0 | Section 3 comparison table: add LLM +1 extra retry note; Section 5: add Option B (Cloud Secret Manager) as alternative config strategy |
 | 2026-06-17 | 0.4.0 | Section 3 table: add max_attempts row; add §6 Implementation Options (Env File Hierarchy vs External Config Server) with comparison matrix |
+| 2026-06-18 | 0.5.0 | Add LLM_MODEL_ESCALATION_ENABLED, LLM_MODEL_TIERS, LLM_FAILURES_BEFORE_ESCALATION env vars to .env, .env.dev, .env.prod; add model_escalation blocks to framework.yaml per environment (§4); add escalation rows to §3 comparison table |
 
 ---
 
@@ -41,6 +42,9 @@ LLM_PROVIDER=openai
 LLM_MODEL=gpt-4o
 LLM_TEMPERATURE=0
 LLM_MAX_TOKENS=4096
+LLM_MODEL_ESCALATION_ENABLED=true
+LLM_MODEL_TIERS=openai:gpt-4o-mini→gpt-4o→gpt-4.1;anthropic:claude-haiku→claude-sonnet→claude-opus
+LLM_FAILURES_BEFORE_ESCALATION=2
 
 # Framework
 LOG_LEVEL=info
@@ -61,6 +65,7 @@ CHECKPOINT_BACKEND=in_memory
 # Relaxed: faster iteration
 LOG_LEVEL=debug
 LLM_MODEL=gpt-4o-mini          # cheaper model for dev
+LLM_MODEL_ESCALATION_ENABLED=false  # no escalation in dev — fail fast
 MAX_TRANSFORM_ATTEMPTS=1       # fail fast
 RETRY_BASE_DELAY_MS=100
 CHECKPOINT_BACKEND=in_memory
@@ -110,6 +115,11 @@ LANGSMITH_TRACING=true
 ALLOW_DANGEROUS_OPS=false         # must pass human approval gate
 MOCK_EXTERNAL_APIS=false          # all real APIs
 
+# Model escalation (prod default: small → medium → large)
+LLM_MODEL_ESCALATION_ENABLED=true
+LLM_MODEL_TIERS=openai:gpt-4o-mini→gpt-4o→gpt-4.1
+LLM_FAILURES_BEFORE_ESCALATION=2
+
 # Security
 PII_SCRUBBING=enabled
 AUDIT_LOG_RETENTION_DAYS=365
@@ -133,6 +143,8 @@ SENSITIVE_FIELD_MASK=partial_mask
 | `PII_SCRUBBING` | optional | enabled | enabled |
 | `LANGSMITH_TRACING` | false | true | true |
 | `max_attempts` | 1 | 2 | 2 |
+| `LLM_MODEL_ESCALATION_ENABLED` | false | true | true |
+| `LLM_FAILURES_BEFORE_ESCALATION` | - | 2 | 2 |
 
 ## 4. `framework.yaml` Environment-Specific Sections
 
@@ -143,6 +155,8 @@ environments:
     llm:
       model: "${LLM_MODEL}"
       temperature: 0
+      model_escalation:
+        enabled: false              # fail fast, no model switching
     rule_engine:
       default: business_rules    # simpler engine for dev
     retry:
@@ -157,6 +171,14 @@ environments:
     llm:
       model: "${LLM_MODEL}"
       temperature: 0
+      model_escalation:
+        enabled: true
+        failures_before_escalation: 2
+        tiers:
+          - provider: openai
+            model: gpt-4o-mini
+          - provider: openai
+            model: gpt-4o
     rule_engine:
       default: durable_rules     # match prod
     retry:
@@ -174,6 +196,25 @@ environments:
       model: "${LLM_MODEL}"
       temperature: 0
       provider: "${LLM_PROVIDER}"
+      model_escalation:
+        enabled: true
+        failures_before_escalation: 2
+        trigger_on:
+          - provider_error
+          - schema_violation
+        tiers:
+          - provider: openai
+            model: gpt-4o-mini
+            temperature: 0
+            max_tokens: 4096
+          - provider: openai
+            model: gpt-4o
+            temperature: 0
+            max_tokens: 4096
+          - provider: openai
+            model: gpt-4.1
+            temperature: 0
+            max_tokens: 16384
     rule_engine:
       default: durable_rules
     retry:

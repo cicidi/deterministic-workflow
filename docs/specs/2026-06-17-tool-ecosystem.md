@@ -433,7 +433,9 @@ mcp_servers:
 
 ### 7.2 Tool Registration
 
-Register tools (API, MCP, command) via YAML configuration:
+> **Note:** The canonical `ToolMeta.type` enum (`api | mcp | command | llm | a2a | sdk`) is defined in [HLD §4.4](./2026-06-16-deterministic-workflow-framework-design.md). This section adds tool ecosystem-specific detail (registry, defaults, SDK/A2A extensions).
+
+Register tools via YAML configuration. Type values follow the [HLD §4.4](./2026-06-16-deterministic-workflow-framework-design.md) enum:
 
 ```yaml
 # framework.yaml
@@ -523,7 +525,7 @@ When the framework is used with Claude Desktop, MCP tools are auto-exposed:
 
 ### 7.4 Tool Failure Routing to `errorNode`
 
-When a tool invocation fails (timeout, permission denied, invalid response), the framework routes the execution to a configured `errorNode` instead of crashing the workflow:
+When a tool invocation fails (timeout, permission denied, invalid response), the framework routes the execution to a configured `errorNode` instead of crashing the workflow. For the canonical errorNode strategy definitions, see [Routing & Execution §6.5](./2026-06-17-routing-execution-layer-design.md).
 
 ```yaml
 # framework.yaml

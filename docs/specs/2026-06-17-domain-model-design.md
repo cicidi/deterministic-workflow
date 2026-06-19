@@ -40,7 +40,65 @@ Transitions + guards              transform_strategy
 
 ### 1.1 Implementation Approach
 
-Domain entities are defined using [OpenAPI 3.1 Schema Objects](https://spec.openapis.org/oas/latest.html#schema-object) (JSON Schema dialect). The framework reads `components/schemas/` directly — no translation layer needed.
+Domain entities are defined using [OpenAPI 3.1 Schema Objects](https://spec.openapis.org/oas/latest.html#schema-object) (JSON Schema dialect), an industry-standard format with full ecosystem support — validators, code generators, IDE auto-complete, Swagger UI. The framework reads `components/schemas/` directly with no translation layer needed. `$ref` enables schema composition without duplication, and downstream API contracts are defined in the same format as domain entities. For a complete concrete example, see [Section 2.2](#22-complete-example--home-insurance) or [home-insurance.yaml](../../domain-models/home-insurance.yaml).
+
+#### Alternative Schema Formats (Context)
+
+| Format | Why Rejected |
+|--------|-------------|
+| Custom FieldDef (flat YAML) | No tooling ecosystem; no code generators; no standard validators |
+| JSON Schema Draft 2020-12 | Less mature tooling than OpenAPI 3.1 subset; no native Swagger UI integration |
+| Pydantic BaseModel | Python-only; not language-agnostic; would violate spec-first principle |
+| OpenAPI 3.1 Schema Object | **Chosen** (AD 29) — industry standard, rich tooling, $ref composition, x- extensions |
+
+## 2. Domain Model Schema
+
+A Domain Model is defined in an OpenAPI 3.1-compliant YAML file:
+
+**Top-level structure:**
+
+```yaml
+openapi: "3.1.0"
+
+info:
+  title: <domain name>        # e.g., "Home Insurance Domain Model"
+  version: <semantic version>
+  description: <human-readable domain description>
+
+components:
+  schemas:                    # ⇐ entity definitions (OpenAPI Schema Objects)
+    EntityName:
+      type: object
+      required: [field1, field2]
+      properties:
+        field1: { type: string, ... }
+        field2:
+          $ref: "#/components/schemas/OtherEntity"  # cross-reference
+
+  x-state-bindings:           # ⇐ framework extension: maps states to entities
+    state_name:
+      entity: <schema_ref>    # which entity this state collects
+      fields: [field1, ...]   # fields active in this state (subset)
+      state_hint: <prompt>    # LLM context for extraction
+```
+
+**Framework consumes:**
+- `components/schemas/` → auto-generate extraction rules, validation rules, LLM structured output schemas
+- `$ref` → resolve referenced schemas, expand compound fields into flat extraction targets
+- `x-state-bindings` → per-state field visibility, state-specific LLM prompts
+
+### 2.1 File Location
+
+```
+docs/domain-models/
+  home-insurance.yaml          # Primary: HomeInsurance, UserInfo, Address, QuoteRequest, etc.
+```
+
+For the complete concrete example, see [home-insurance.yaml](../../domain-models/home-insurance.yaml).
+
+### 2.2 Complete Example — Home Insurance
+
+The schema above instantiates into a concrete domain model like this:
 
 ```yaml
 # domain-models/home-insurance.yaml — OpenAPI components/schemas
@@ -114,230 +172,194 @@ components:
       entity: QuoteRequest
 ```
 
-Industry-standard format. Full ecosystem: validators, code generators, IDE auto-complete, Swagger UI. `$ref` enables schema composition without duplication. Downstream API contracts defined in the same format as domain entities.
+### 2.3 Advanced Schema Patterns
 
-## 2. Domain Model Schema
+OpenAPI/JSON Schema provides composition and constraint keywords that produce richer, more precise schemas than flat field lists:
 
-A Domain Model is defined in an OpenAPI 3.1-compliant YAML file:
-
-**Top-level structure:**
+**Polymorphism (`oneOf` + `discriminator`) —** when a field's type depends on a runtime value:
 
 ```yaml
-openapi: "3.1.0"
+IncidentReport:
+  type: object
+  required: [incident_type, details]
+  properties:
+    incident_type:
+      type: string
+      enum: [fire, water_damage, theft]
+    details:
+      oneOf:
+        - $ref: "#/components/schemas/FireIncidentDetail"
+        - $ref: "#/components/schemas/WaterDamageDetail"
+        - $ref: "#/components/schemas/TheftDetail"
+      discriminator:
+        propertyName: incident_type
+        mapping:
+          fire: "#/components/schemas/FireIncidentDetail"
+          water_damage: "#/components/schemas/WaterDamageDetail"
+          theft: "#/components/schemas/TheftDetail"
+```
 
-info:
-  title: <domain name>        # e.g., "Home Insurance Domain Model"
-  version: <semantic version>
-  description: <human-readable domain description>
+**Composition (`allOf`) —** merge a base schema with extensions:
 
-components:
-  schemas:                    # ⇐ entity definitions (OpenAPI Schema Objects)
-    EntityName:
-      type: object
-      required: [field1, field2]
+```yaml
+PremiumEstimate:
+  allOf:
+    - $ref: "#/components/schemas/QuoteRequest"
+    - type: object
+      required: [monthly_premium, annual_premium]
       properties:
-        field1: { type: string, ... }
-        field2:
-          $ref: "#/components/schemas/OtherEntity"  # cross-reference
-
-  x-state-bindings:           # ⇐ framework extension: maps states to entities
-    state_name:
-      entity: <schema_ref>    # which entity this state collects
-      fields: [field1, ...]   # fields active in this state (subset)
-      state_hint: <prompt>    # LLM context for extraction
+        monthly_premium: { type: number, minimum: 0 }
+        annual_premium:  { type: number, minimum: 0 }
 ```
 
-**Framework consumes:**
-- `components/schemas/` → auto-generate extraction rules, validation rules, LLM structured output schemas
-- `$ref` → resolve referenced schemas, expand compound fields into flat extraction targets
-- `x-state-bindings` → per-state field visibility, state-specific LLM prompts
+**Conditional validation (`if`/`then`/`else`) —** validate one field based on another's value:
 
-### 2.1 File Location
-
+```yaml
+CoverageInfo:
+  type: object
+  required: [coverage_type]
+  properties:
+    coverage_type:
+      type: string
+      enum: [building_only, contents_only, both]
+    building_coverage:
+      type: number
+    contents_coverage:
+      type: number
+  if:
+    properties:
+      coverage_type:
+        enum: [building_only, both]
+    required: [coverage_type]
+  then:
+    required: [building_coverage]
+  if:
+    properties:
+      coverage_type:
+        enum: [contents_only, both]
+    required: [coverage_type]
+  then:
+    required: [contents_coverage]
 ```
-docs/domain-models/
-  home-insurance.yaml          # Primary: HomeInsurance, UserInfo, Address, QuoteRequest, etc.
+
+**Arrays with constraints —** structured lists with size bounds, uniqueness, and item schema:
+
+```yaml
+ClaimHistory:
+  type: object
+  properties:
+    prior_claims:
+      type: array
+      minItems: 0
+      maxItems: 50
+      uniqueItems: true
+      items:
+        $ref: "#/components/schemas/PriorClaim"
+  additionalProperties: false       # reject unknown fields
 ```
 
-For the complete concrete example, see [home-insurance.yaml](../../domain-models/home-insurance.yaml).
+**Key patterns for the framework:**
+
+| Pattern | Use Case |
+|---------|----------|
+| `oneOf` + `discriminator` | Entity subtype selection (fire claim vs water claim) |
+| `allOf` | Extend a base entity with derived fields |
+| `if`/`then`/`else` | Conditional required fields (only ask contents_coverage when coverage_type is `both`) |
+| `minItems`/`maxItems`/`uniqueItems` | Bounded lists (max 50 claims, no duplicates) |
+| `multipleOf` | Numeric step constraint (coverage in $100 increments) |
+| `additionalProperties: false` | Strict schema — reject unrecognized LLM output fields |
 
 ---
 
 ## 3. Entity Definition
 
-### 3.1 EntityDef Schema
+An Entity is an OpenAPI 3.1 Schema Object defined under `components/schemas/`. The framework consumes standard JSON Schema keywords directly — `type`, `required`, `enum`, `pattern`, `minLength`/`maxLength`, `minimum`/`maximum`, `format`, `description`, `$ref` — and generates ExtractionRule, ValidationRule, and TransformRule from them automatically.
 
-```
-EntityDef {
-  name:        string              // entity name (e.g., "property_info")
-  description: string              // guides LLM extraction + documentation
-  fields:      Map<string, FieldDef> // ordered field definitions
-}
-```
+**Every field must define two core parameters:**
 
-### 3.2 FieldDef Schema
+| Parameter | JSON Schema Keyword | Purpose |
+|-----------|---------------------|---------|
+| **Required** | `required` (schema-level array) | Declares whether the field must be non-null; drives `context_complete` guard evaluation |
+| **Regex** | `pattern` | Regex pattern for string validation; the primary deterministic validation rule |
 
-```
-FieldDef {
-  type:        string              // "string" | "int" | "float" | "date" | "boolean" | "enum" | "list"
-  required:    boolean             // true → null triggers validation error
-  description: string              // guides LLM extraction
-  values?:     string[]            // valid values (for type: enum)
-  range?:      { min?: number, max?: number }  // (for type: int, float)
-  pattern?:    string              // regex pattern (for type: string)
-  min_length?: int                 // minimum string length
-  deterministic_fallback?: {       // deterministic extraction fallback
-    keywords?: string[]
-    regex?:    string
-    priority?: "llm_wins" | "regex_wins"
-  }
-  transform?:  TransformOp[]       // type coercion / normalization pipeline
-  examples?:   string[]            // few-shot examples for LLM prompt
-}
+A field without `required` defaults to optional (does not block transitions). A field without `pattern` has no regex validation — other JSON Schema keywords (`enum`, `minLength`, `minimum`/`maximum`) may still apply.
 
-TransformOp {
-  type:   "cast" | "normalize" | "parse" | "lookup" | "default" | "external"
-  config: Record<string, any>      // type-specific configuration
-}
-```
-
-### 3.3 Type System
-
-| Type | Validation | Transform (default) |
-|------|-----------|---------------------|
-| `string` | non-empty if required | `trim` |
-| `int` | integer, optional range | `cast: int` |
-| `float` | numeric, optional range | `cast: float` |
-| `date` | ISO 8601 format | `parse: date` |
-| `boolean` | true/false/yes/no/1/0 | `cast: boolean` |
-| `enum` | must be in `values[]` | `normalize: lowercase` + `lookup` |
-| `list` | array of items | `split: ","` |
-
-### 3.4 Example: home-insurance domain
+Framework-specific behavior that JSON Schema does not cover is added via `x-` prefixed extensions:
 
 ```yaml
-domain: home_insurance
-version: 1.0.0
-description: "Home insurance quote, claim, and policy management"
+# OpenAPI Schema Object with framework extensions
+property_type:
+  type: string
+  enum: [apartment, house, villa]
+  description: "Type of property being insured"
+  x-fallback:                         # Framework: deterministic extraction fallback
+    keywords: [apartment, house, villa, condo, flat]
+    regex: null
+    priority: llm_wins
+  x-transform:                        # Framework: type coercion pipeline
+    - op: normalize
+      config: { to: lowercase }
+    - op: lookup
+      config:
+        mapping:
+          condo: apartment
+          flat: apartment
+  x-examples:                         # Framework: few-shot examples for LLM prompt
+    - "I live in a house"
+    - "3-bedroom apartment"
+```
 
-entities:
-  property_info:
-    description: "Property information for home insurance"
-    fields:
-      property_type:
-        type: enum
-        values: [apartment, house, villa]
-        required: true
-        description: "Type of property being insured"
-        examples: ["I live in a house", "3-bedroom apartment", "my villa"]
-        deterministic_fallback:
-          keywords: [apartment, house, villa, condo, flat]
-        transform:
-          - type: normalize
-            config: { op: lowercase }
-          - type: lookup
-            config:
-              mapping:
-                condo: apartment
-                flat: apartment
-                "single family": house
+| Extension | Purpose |
+|-----------|---------|
+| `x-fallback` | Deterministic extraction fallback when LLM confidence is low: `{ keywords?: string[], regex?: string, priority: "llm_wins" \| "regex_wins" }` |
+| `x-transform` | Type coercion / normalization pipeline: `[{ op: "cast" \| "normalize" \| "parse" \| "lookup" \| "default" \| "external", config: object }]` |
+| `x-examples` | Few-shot examples injected into LLM extraction prompt: `string[]` |
 
-      address:
-        type: string
-        required: true
-        description: "Full address including street, city, province, postal code"
-        min_length: 5
+All other validation (type checking, enum matching, pattern regex, length/range bounds) is derived directly from the entity's standard JSON Schema keywords — the framework needs no additional configuration for them.
 
-      postal_code:
-        type: string
-        required: true
-        description: "6-digit postal code"
-        pattern: "^[0-9]{6}$"
-        deterministic_fallback:
-          regex: "\\b[0-9]{6}\\b"
-          priority: regex_wins
+The framework auto-generates ExtractionRule, ValidationRule, and TransformRule from each field. For example, given:
 
-      building_age:
-        type: int
-        required: true
-        description: "Age of the building in years"
-        range: { min: 0, max: 200 }
-        examples: ["built in 2010", "15 years old", "brand new"]
-        transform:
-          - type: cast
-            config: { to: int }
+```yaml
+property_type:
+  type: string
+  enum: [apartment, house, villa]
+  description: "Type of property"
+  x-fallback:
+    keywords: [apartment, house, villa, condo, flat]
+  x-transform:
+    - op: normalize
+      config: { to: lowercase }
+    - op: lookup
+      config:
+        mapping:
+          condo: apartment
+          flat: apartment
+```
 
-      floor_area:
-        type: float
-        required: false
-        description: "Floor area in square meters"
-        range: { min: 1, max: 100000 }
-        transform:
-          - type: cast
-            config: { to: float }
+The framework produces:
 
-      construction_material:
-        type: enum
-        values: [brick, concrete, wood_frame, steel]
-        required: false
-        description: "Primary construction material"
+```
+ExtractionRule {
+  field: "property_type"
+  type: "string"
+  description: "Type of property (apartment, house, villa)"
+  fallback_keywords: ["apartment", "house", "villa", "condo", "flat"]
+}
 
-  coverage_needs:
-    description: "Coverage requirements for a quote"
-    fields:
-      coverage_type:
-        type: enum
-        values: [building_only, contents_only, both]
-        required: true
-        description: "What type of coverage the user wants"
+ValidationRule {
+  field: "property_type"
+  type: "string"
+  required: true
+  enum: ["apartment", "house", "villa"]
+}
 
-      building_coverage:
-        type: float
-        required: true
-        description: "Coverage amount for building (CNY)"
-        range: { min: 0 }
-
-      contents_coverage:
-        type: float
-        required: false
-        description: "Coverage amount for contents (CNY)"
-        range: { min: 0 }
-
-      deductible:
-        type: enum
-        values: [low, standard, high]
-        required: true
-        description: "Deductible preference"
-
-      riders:
-        type: list
-        required: false
-        description: "Additional rider coverage (fire, theft, water_damage, earthquake, liability)"
-
-  claim_details:
-    description: "Claim filing information"
-    fields:
-      incident_type:
-        type: enum
-        values: [fire, water_damage, theft, natural_disaster, other]
-        required: true
-        description: "Type of incident being claimed"
-
-      incident_date:
-        type: date
-        required: true
-        description: "Date the incident occurred"
-
-      damage_description:
-        type: string
-        required: true
-        description: "Description of the damage"
-
-      estimated_loss:
-        type: float
-        required: true
-        description: "Estimated loss amount (CNY)"
-        range: { min: 0 }
+TransformRule {
+  field: "property_type"
+  rules: [
+    { op: "normalize", config: { to: "lowercase" } },
+    { op: "lookup", config: { mapping: { condo: "apartment", flat: "apartment" } } }
+  ]
+}
 ```
 
 ---
@@ -350,7 +372,7 @@ entities:
 StateDef {
   name:         string    // state name (e.g., "collect_property_info")
   description:  string    // human-readable description of what this state expects
-  entity:       string    // which entity this state extracts (references EntityDef.name)
+  entity:       string    // which entity this state extracts (references a schema name under components/schemas/)
   state_hint:   string    // disambiguation hint injected into LLM extraction prompt
   max_retries?: int       // max retries before escalating (default: from framework config)
 }
@@ -358,12 +380,7 @@ StateDef {
 
 ### 4.2 State → Entity Binding
 
-Each state binds to exactly one entity. The framework uses this binding to:
-
-1. Generate `ExtractionRule[]` from the entity's `FieldDef[]`
-2. Generate `ValidationRule[]` from field types, required flags, patterns, and ranges
-3. Generate `TransformRule[]` from field `transform` declarations
-4. Inject `state_hint` into the LLM prompt when extracting data in this state
+Each state binds to exactly one entity (an OpenAPI Schema Object). The framework reads the entity's schema to auto-generate extraction, validation, and transform rules (see [Section 9 — Framework Consumption Flow](#9-framework-consumption-flow) for the full pipeline).
 
 ### 4.3 Example
 
@@ -371,26 +388,40 @@ Each state binds to exactly one entity. The framework uses this binding to:
 states:
   collect_property_info:
     description: "Collect property details from the user"
-    entity: property_info
+    entity: $ref: "#/components/schemas/PropertyInfo"
     state_hint: >
       The user is providing property information for a home insurance quote.
       Address may include street, city, province, postal code.
       Building age is in years. "Brand new" or "newly built" means age 0.
+    x-state-bindings:                # per-state extraction scope (see §3)
+      property_type: {}
+      address: {}
+      building_age: {}
+      floor_area: {}
+      construction_type: {}
 
   collect_coverage_needs:
     description: "Collect coverage preferences"
-    entity: coverage_needs
+    entity: $ref: "#/components/schemas/CoverageInfo"
     state_hint: >
       The user is choosing coverage type and amount.
       Deductible options: low (500 CNY), standard (2000 CNY), high (5000 CNY).
+    x-state-bindings:
+      coverage_type: {}
+      coverage_amount: {}
 
   file_claim:
     description: "File a new claim"
-    entity: claim_details
+    entity: $ref: "#/components/schemas/ClaimDetails"
     state_hint: >
       The user is reporting an incident for a claim.
       Incident type must be one of: fire, water_damage, theft, natural_disaster, other.
       Date should be in YYYY-MM-DD format.
+    x-state-bindings:
+      claim_type: {}
+      damage_description: {}
+      incident_date: {}
+      incident_location: {}
 ```
 
 ### 4.4 State Name → agentState.phase Mapping
@@ -417,9 +448,89 @@ No explicit mapping configuration is needed. The framework derives the phase val
 
 ---
 
-## 5. Transition Definition
+## 5. Intent Model
 
-### 5.1 TransitionDef Schema
+The Intent Model defines the contract between **what the user says** (Layer 1 — NLU) and **what the system does** (Layer 2 — Routing). Every user utterance maps to an intent, which maps to an entry state.
+
+### 5.1 IntentDef Schema
+
+```yaml
+intents:
+  get_home_insurance_quote:
+    name: get_home_insurance_quote
+    description: "User wants a home insurance quote"
+    confidence_threshold: 0.7
+    entry_state: collect_property_info
+    examples:
+      - "I need home insurance for my house"
+      - "How much is home insurance?"
+      - "Get me a quote for my apartment"
+    fallback_intent: general_inquiry
+
+  file_insurance_claim:
+    name: file_insurance_claim
+    description: "User wants to file an insurance claim"
+    confidence_threshold: 0.8
+    entry_state: file_claim
+    examples:
+      - "My house flooded, I need to file a claim"
+      - "There was a fire at my property"
+    fallback_intent: general_inquiry
+
+  general_inquiry:
+    name: general_inquiry
+    description: "General question not matching specific intents"
+    confidence_threshold: 0.0
+    entry_state: handle_general_inquiry
+```
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `name` | string | Unique intent identifier |
+| `description` | string | Guides LLM classification prompt |
+| `confidence_threshold` | float (0.0–1.0) | Minimum confidence to match; below threshold → `fallback_intent` |
+| `entry_state` | string | State the workflow enters when this intent matches |
+| `examples` | string[] | Few-shot examples for LLM classification |
+| `fallback_intent` | string | Intent to use when confidence is below threshold |
+
+### 5.2 Intent → State Routing
+
+The intent model is the **deterministic entry point** into the state machine:
+
+```
+User Input: "I need home insurance"
+    │
+    ▼
+Intent Classifier (Layer 1)
+    │  confidence: 0.92 → get_home_insurance_quote
+    │
+    ▼
+Route to entry_state: collect_property_info
+    │
+    ▼
+State Machine starts executing transitions from collect_property_info
+```
+
+The framework uses `entry_state` to set `agentState.phase` on first turn, then transitions take over. If the classifier returns an intent below `confidence_threshold`, the framework routes to the `fallback_intent`'s `entry_state` instead.
+
+### 5.3 Multi-Intent Sessions
+
+A single conversation may match multiple intents over its lifetime:
+
+```
+Turn 1: "I need insurance"     → intent: get_home_insurance_quote  → state: collect_property_info
+Turn 2: "Also, I had a fire"   → intent: file_insurance_claim      → state: file_claim (re-routes)
+```
+
+When a new intent arrives mid-conversation, the framework evaluates whether to **re-route** (switch to new entry_state) or **continue** (stay in current state). The default behavior is to re-route unless the current state's transition rules explicitly prevent it.
+
+---
+
+## 6. Transition Definition
+
+Transitions define valid paths between states. Guards are boolean expressions evaluated against the current entity state. The **authoritative guard expression syntax** is defined in [State Machine Design §3.4](./2026-06-16-state-machine-design.md).
+
+### 6.1 TransitionDef Schema
 
 ```
 TransitionDef {
@@ -431,13 +542,13 @@ TransitionDef {
 }
 ```
 
-### 5.2 Transition Semantics
+### 6.2 Transition Semantics
 
 - **Self-loop**: `from: collect_property_info, to: collect_property_info, guard: "context_incomplete"` — stay in current state until all required fields are filled
 - **Advance**: `from: collect_property_info, to: assess_risk, guard: "property_type != null AND address != null AND building_age != null"` — move forward when entity fields are complete
 - **Conditional branch**: multiple transitions from the same state with non-overlapping guards decide the next state
 
-### 5.3 Conflict Resolution
+### 6.3 Conflict Resolution
 
 When multiple transitions from the same state have guards that could both be true:
 
@@ -445,7 +556,7 @@ When multiple transitions from the same state have guards that could both be tru
 2. **First-match wins** — the first guard that evaluates true determines the transition
 3. **Unreachable fallback** — if all guards fail, the framework uses the `on_nomatch` transition (explicitly defined or `on_transform_failure` node)
 
-### 5.4 Example
+### 6.4 Example
 
 ```yaml
 transitions:
@@ -481,7 +592,7 @@ transitions:
     guard: "context_incomplete"
 ```
 
-### 5.5 Reserved Transition Target: `errorNode`
+### 6.5 Reserved Transition Target: `errorNode`
 
 The transition target name `errorNode` is reserved for error handling. Behavior:
 
@@ -498,14 +609,6 @@ The transition target name `errorNode` is reserved for error handling. Behavior:
 ```
 
 The `errorNode` is resolved by the framework (step 6 of the consumption flow) and injected into the LangGraph state machine alongside the domain-defined states.
-
----
-
-## 6. Guard Expression Syntax
-
-Guards are boolean expressions evaluated against the current entity state. The **authoritative guard expression syntax** — including boolean operators, comparison operators, list membership, null checks, framework-generated meta-variables, and natural language fallback — is defined in [State Machine Design §3.4 Guard Expression Syntax](./2026-06-16-state-machine-design.md).
-
-The domain model uses guards in `TransitionDef` entries to determine which state the workflow enters next. The framework evaluates guards at runtime using the state machine's expression evaluator. For complex business rules, guards can delegate to custom guard functions or rule engines (see State Machine Design §3.4).
 
 ---
 
@@ -604,74 +707,239 @@ When the framework loads a workflow that references a domain model:
 ```
 1. Load domain model YAML → parse entities, states, transitions
 2. Load workflow YAML → parse nodes, strategy configs
-3. For each state → look up bound entity → expand FieldDef[] to:
-   a. ExtractionRule[]  (from field name, type, description, deterministic_fallback, examples)
-   b. ValidationRule[]  (from field required, type, pattern, range, min_length)
-   c. TransformRule[]   (from field transform)
+3. For each state → look up bound entity → expand OpenAPI Schema Object properties to:
+   a. ExtractionRule[]  (from field name, type, description, x-fallback, x-examples)
+   b. ValidationRule[]  (from required, type, pattern, enum, minLength/maxLength, minimum/maximum)
+   c. TransformRule[]   (from x-transform)
 4. Merge with node-level overrides (context_window_size, max_transform_attempts, etc.)
 5. Instantiate Extract / Validate / Transform nodes via ExtractionFactory(strategy)
 6. Generate LangGraph nodes + conditional edges from transition definitions
 ```
 
-### 9.1 Entity → Rules Expansion
+---
 
-The framework performs automatic expansion. For example, given the `property_type` field:
+## 10. Persistence Schema
+
+The Domain Model also defines what gets persisted — the runtime data structures consumed by checkpoint storage, audit logging, and code generation. These schemas live alongside business entities in `components/schemas/`.
+
+### 10.1 AgentState
+
+The shared state object persisted at every turn checkpoint:
 
 ```yaml
-# Domain model entity field
-property_type:
-  type: enum
-  values: [apartment, house, villa]
-  required: true
-  description: "Type of property"
-  deterministic_fallback:
-    keywords: [apartment, house, villa, condo, flat]
-  transform:
-    - type: normalize
-      config: { op: lowercase }
-    - type: lookup
-      config: { mapping: { condo: apartment, flat: apartment, "single family": house } }
+AgentState:
+  type: object
+  required: [conversation_id, user_id, phase, fieldTo, fieldExtractedList, collectedFields]
+  properties:
+    conversation_id:
+      type: string
+      format: uuid
+    user_id:
+      type: string
+      description: "trace_id — same as user_id per tracing model"
+    phase:
+      type: string
+      description: "Current state name (matches StateDef.name)"
+
+    # --- Field → Entity routing ---
+    fieldTo:
+      type: object
+      additionalProperties: { type: string }
+      description: >
+        Maps each field name to its target entity name.
+        Derived from x-state-bindings at domain model load time.
+        Example: { "street": "Address", "first_name": "UserInfo",
+                   "monthly_premium": "QuoteRequest" }
+
+    # --- Extraction tracking ---
+    fieldExtractedList:
+      type: array
+      items: { type: string }
+      description: >
+        List of field names that passed Extract → Validate → Transform
+        successfully. Only fields in this list are written into
+        collectedFields (the DomainModel entity).
+        Fields that failed validation or transformation are NOT added here.
+
+    # --- DomainModel entity values (successfully collected only) ---
+    collectedFields:
+      type: object
+      additionalProperties: true
+      description: >
+        Accumulated field values that passed all three stages
+        (Extract → Validate → Transform). Structured per-entity:
+        { "Address": { "street": "123 Main", "city": "Toronto" },
+          "UserInfo": { "first_name": "Alice" } }
+        This IS the DomainModel entity state — only verified values live here.
+
+    lastIntent:
+      type: string
+      description: "Last classified intent name"
+    intentConfidence:
+      type: number
+      minimum: 0
+      maximum: 1
+    turnNumber:
+      type: integer
+      minimum: 0
+    lifecycleState:
+      type: string
+      enum: [created, active, paused, completed, abandoned, timeout, archived]
+    createdAt:
+      type: string
+      format: date-time
+    lastActiveAt:
+      type: string
+      format: date-time
 ```
 
-The framework auto-generates:
+**Key invariant:**
 
 ```
-ExtractionRule {
-  field: "property_type"
-  description: "Type of property (apartment, house, villa)"
-  type: "enum"
-  required: true
-  fallback_keywords: ["apartment", "house", "villa", "condo", "flat"]
-}
+Extract → Validate → Transform passes for field X
+  → X is added to fieldExtractedList
+  → X's value is written into collected_fields[fieldTo[X]]
+  → context_complete guard checks collected_fields[entity].required fields
 
-ValidationRule {
-  field: "property_type"
-  required: true
-  enum: ["apartment", "house", "villa"]
-}
-
-TransformRule {
-  field: "property_type"
-  rules: [
-    { type: "normalize", config: { op: "lowercase" } },
-    { type: "lookup", config: { mapping: { condo: "apartment", flat: "apartment", "single family": "house" } } }
-  ]
-}
+Extract → Validate → Transform fails for field Y
+  → Y is NOT added to fieldExtractedList
+  → Y is NOT written into collected_fields
+  → collected_fields is PARTIAL but always CORRECT
 ```
+
+`collected_fields` is the single source of truth for what has been successfully collected. If a user provides address AND phone, but phone fails validation, only address is in `collected_fields` — the DomainModel entity never contains unverified data.
+
+### 10.2 Checkpoint Record
+
+LangGraph checkpoint enriched with domain metadata:
+
+```yaml
+Checkpoint:
+  type: object
+  required: [checkpoint_id, conversation_id, agent_state]
+  properties:
+    checkpoint_id:
+      type: string
+      format: uuid
+    conversation_id:
+      type: string
+      format: uuid
+    agent_state:
+      $ref: "#/components/schemas/AgentState"
+    context:
+      type: object
+      properties:
+        extraction_result: { type: object }
+        routing_decision:  { type: object }
+        response_data:     { type: object }
+    messages:
+      type: array
+      maxItems: 20
+      items:
+        $ref: "#/components/schemas/ConversationMessage"
+    audit:
+      type: object
+      properties:
+        state_transitions:
+          type: array
+          items:
+            $ref: "#/components/schemas/LifecycleAuditEntry"
+        llm_calls:
+          type: array
+          items:
+            $ref: "#/components/schemas/LLMCallRecord"
+```
+
+### 10.3 Conversation History
+
+```yaml
+ConversationMessage:
+  type: object
+  required: [message_id, turn_number, role, content, timestamp]
+  properties:
+    message_id:
+      type: string
+    turn_number:
+      type: integer
+    role:
+      type: string
+      enum: [user, agent, system]
+    content:
+      type: string
+      maxLength: 10000
+    extracted:
+      type: object
+      description: "Fields extracted from this message (Layer 1 output)"
+    intent:
+      type: string
+    confidence:
+      type: number
+    components:
+      type: array
+      description: "Widget components rendered in this message"
+    masked:
+      type: boolean
+      description: "Whether PII was scrubbed before storage. The authoritative PII rules definition is in [Response Generation §8](./2026-06-17-response-generation-layer-design.md)."
+    timestamp:
+      type: string
+      format: date-time
+```
+
+### 10.4 Audit Records
+
+```yaml
+LifecycleAuditEntry:
+  type: object
+  required: [timestamp, conversation_id, previous_state, new_state, trigger]
+  properties:
+    timestamp:      { type: string, format: date-time }
+    conversation_id: { type: string }
+    user_id:         { type: string }
+    previous_state:  { type: string }
+    new_state:       { type: string }
+    trigger:         { type: string }
+    turn_number:     { type: integer }
+    checkpoint_id:   { type: string }
+
+LLMCallRecord:
+  type: object
+  required: [timestamp, model, latency_ms, tokens_used]
+  properties:
+    timestamp:    { type: string, format: date-time }
+    model:        { type: string }
+    provider:     { type: string }
+    latency_ms:   { type: integer }
+    tokens_used:
+      type: object
+      properties:
+        input:  { type: integer }
+        output: { type: integer }
+    schema_violation: { type: boolean }
+    retry_attempt:    { type: integer }
+```
+
+### 10.5 Code Generation Contract
+
+The framework consumes these schemas to generate:
+
+| Generated Artifact | Source Schema |
+|--------------------|--------------|
+| `AgentState` Python dataclass / TypeScript interface | `AgentState` schema |
+| `Checkpoint` serialization/deserialization code | `Checkpoint` schema |
+| `ConversationMessage` DTO | `ConversationMessage` schema |
+| Database migration (checkpoint store DDL) | `AgentState` + `Checkpoint` schemas |
+| Audit log query API | `LifecycleAuditEntry` + `LLMCallRecord` schemas |
+| Intent classifier training data format | `IntentDef` entries |
 
 ---
 
-## 10. Edge Cases
+## 11. Edge Cases
 
-### 10.1 Optional vs. Required Fields
-
-Fields marked `required: false` are extracted and validated if present, but `context_complete` evaluates true even if they are null. Optional fields do not block state transition.
-
-### 10.2 Cross-Entity Data
+### 11.1 Cross-Entity Data
 
 When a state collects `coverage_needs` but the transition guard references a field from `property_info` (collected in a previous state), the framework evaluates the guard against the accumulated `collectedFields` across all entities. This enables guards like `"building_age > 10 AND building_coverage > 500000"`.
 
-### 10.3 Dynamic Entity Selection
+### 11.2 Dynamic Entity Selection
 
 For scenarios where the entity schema depends on a prior decision (e.g., auto vs home insurance), use two-stage domain models:
 
@@ -710,7 +978,7 @@ transitions:
 
 ---
 
-## 11. Open Questions
+## 12. Open Questions
 
 | # | Question | Impact |
 |---|----------|--------|

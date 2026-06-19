@@ -131,7 +131,7 @@ The framework exposes clean interfaces for developers to implement business logi
 | Audit trail | Every decision, extraction, and transition logged |
 | Deterministic fallback | Regex/keyword fallback for every extractable field |
 | State awareness | Current FSM state injected into every LLM prompt |
-| Phase-aware routing + return stack | Current FSM phase injected into routing decisions; return stack tracks parent context when sub-workflows complete, enabling seamless resume |
+| Phase-aware routing + phase return stack | Current FSM phase injected into routing decisions; phase return stack tracks parent context when sub-workflows complete, enabling seamless resume |
 | Sub-workflow reuse | Shared capabilities defined once, invoked from any state |
 
 All LLM interactions produce structured JSON output with framework-enforced guardrails (schema check, field presence, type coercion). Free-text generation is limited to Layer 3.
@@ -206,6 +206,8 @@ Detailed permission design in [Routing & Execution Layer](./2026-06-17-routing-e
 - **[CI/CD Pipeline](./2026-06-17-cicd-jenkins-pipeline.md)** — Automated validation, evaluation, build, and deployment pipeline with gated environment promotion.
 - **[Rate Limiting](./2026-06-17-rate-limiting.md)** — Rate limiting strategy: per-user, per-workflow, per-LLM-provider throttling.
 - **[Widget Templates](./2026-06-17-widget-templates.md)** — Widget template system: structured UI components for Layer 3 responses.
+- **[RAG Interface](./2026-06-18-rag-interface.md)** — Retrieval-Augmented Generation abstraction: Document, DocumentStore, Embedder, Retriever, RAGPipeline interfaces with backend adapters.
+- **[Agent Types](./2026-06-18-agent-types.md)** — Specialized execution agents (ReadOnlyAgent, EscalationAgent) dispatched by the state machine for specific intent categories.
 - **[Home Insurance Examples](../examples/home-insurance/)** — Complete workflow definition (`workflow.yaml`), intent catalog, end-to-end scenarios, and audit log sample.
 
 ## 6. Downstream: Skill-Assisted Spec Generation

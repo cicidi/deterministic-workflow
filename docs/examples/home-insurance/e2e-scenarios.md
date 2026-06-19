@@ -1,6 +1,8 @@
 # Home Insurance — End-to-End Scenarios
 
 > Walkthroughs for [workflow.yaml](./workflow.yaml). Trace the full path from user input to completion.
+> **Extraction model:** Two parallel LLM calls per turn (narrow state scope + broad full-schema scan), merged by confidence-based resolution.
+> **DomainModel invariant:** Only fields that pass Extract → Validate → Transform are written into `collected_fields`. Failed fields never enter the DomainModel.
 
 ---
 
@@ -18,24 +20,106 @@ User:   "I want a home insurance quote for my apartment"
    building age, floor area, and construction material?"
 
 User:   "It's an apartment at 88 Nanjing Road, Shanghai 200001.
-         Built in 2015, 95 square meters, concrete structure."
+         Built in 2015, 95 square meters, concrete structure.
+         My phone is 138-1234-5678."
+
+  --- EXTRACTION (parallel two-LLM) ---
+  LLM 1 (narrow scope — collect_property_info only):
+    target: property_type, address, building_age, floor_area, construction_material
+    result: { property_type: "apartment" (0.94), address: "88 Nanjing Rd Shanghai 200001" (0.91),
+              building_age: "9" (0.87), floor_area: "95" (0.96),
+              construction_material: "concrete" (0.93) }
+
+  LLM 2 (broad scope — full HomeInsurance + UserInfo + Address schemas):
+    target: ALL fields across ALL entities
+    result: { property_type: "apartment" (0.72), address: "88 Nanjing Rd" (0.68),
+              first_name: null (0.0), last_name: null (0.0),
+              phone: "138-1234-5678" (0.85), ← caught from full domain scan
+              email: null (0.0) }
+
+  --- MERGE & RESOLVE ---
+  property_type:  LLM1(0.94) ≥ LLM2(0.72) → use LLM1 → "apartment"
+  address:        LLM1(0.91) ≥ LLM2(0.68) → use LLM1 → "88 Nanjing Rd Shanghai 200001"
+  building_age:   LLM1(0.87), LLM2(null)  → use LLM1 → "9"
+  floor_area:     LLM1(0.96), LLM2(null)  → use LLM1 → "95"
+  construction_material: LLM1(0.93), LLM2(null) → use LLM1 → "concrete"
+  phone:          LLM1(null), LLM2(0.85)  → LLM2 only → CONFIRM with user later
+
+  --- VALIDATE + TRANSFORM ---
+  [Validate] all 5 narrow-scope fields → PASS
+  [Transform] building_age: "9" → cast:int → 9 (building built 2015, current year 2024 → age=9)
+     phone: not in current state scope → skip for now (will confirm later)
+
+  --- AgentState update ---
+  fieldExtractedList: ["property_type", "address", "building_age",
+                       "floor_area", "construction_material"]
+  collected_fields: {
+    "PropertyInfo": { property_type: "apartment", address: "88 Nanjing Rd Shanghai 200001",
+                      building_age: 9, floor_area: 95, construction_material: "concrete" }
+  }
+  NOTE: phone NOT in fieldExtractedList — it's a candidate from LLM 2,
+        pending user confirmation. It is NOT in collected_fields.
+
+  --- RESPONSE (Layer 3) ---
+  "Great, I've captured your property details:
+   ✅ Property type: apartment
+   ✅ Address: 88 Nanjing Road, Shanghai 200001
+   ✅ Building age: 9 years
+   ✅ Floor area: 95 sqm
+   ✅ Construction: concrete
+   ⏳ Phone number: 138-1234-5678 — I'll confirm this in a moment.
+
+   Let me verify your address..."
 
   [LLM + tool: lookup_property_record("88 Nanjing Road, Shanghai")]
   Internal: Property record verified. Flood zone: low. Crime rate: low.
-  [output_schema populated: property_type=apartment, address=..., building_age=11, floor_area=95, construction_material=concrete]
-  → guard passed: all required fields non-null → enter collect_coverage_needs
+  → guard passed: all PropertyInfo required fields non-null → enter collect_coverage_needs
 
 -- collect_coverage_needs ----------------------------------------
   [LLM → stream]
   "Great, your apartment is 95 sqm in a concrete building from 2015.
-   What coverage do you need? Building only, contents only, or both?
-   Also, what amount and deductible do you prefer?"
+   By the way, I noticed you mentioned your phone is 138-1234-5678 earlier.
+   Is that your phone number?"  ← LLM 2 field confirmation
 
-User:   "Both building and contents. Building 2,000,000 CNY,
-         contents 500,000 CNY. Standard deductible is fine.
-         Add fire and theft riders."
+User:   "Yes, that's my phone. Both building and contents coverage.
+         Building 2,000,000 CNY, contents 500,000 CNY.
+         Standard deductible is fine. Add fire and theft riders."
 
-  [output_schema populated: coverage_type=both, building_coverage=2000000, contents_coverage=500000, deductible=standard, riders=[fire, theft]]
+  --- EXTRACTION (parallel) ---
+  LLM 1 (narrow): { coverage_type: "both" (0.95), building_coverage: "2000000" (0.92),
+                    contents_coverage: "500000" (0.88), deductible: "standard" (0.90),
+                    riders: ["fire","theft"] (0.91) }
+  LLM 2 (broad):  { coverage_type: "both" (0.78), phone: "13812345678" (0.91) }
+
+  --- MERGE ---
+  phone: LLM1(null), LLM2(0.91) → use LLM2 (user confirmed above)
+
+  --- VALIDATE + TRANSFORM ---
+  [Validate] coverage fields → PASS
+  [Transform] phone: pattern "^138[0-9]{8}$" → PASS → "13812345678"
+
+  --- AgentState update ---
+  fieldExtractedList: [..., "coverage_type", "building_coverage",
+                       "contents_coverage", "deductible", "riders", "phone"]
+  collected_fields: {
+    "PropertyInfo": { ... },
+    "CoverageInfo": { coverage_type: "both", building_coverage: 2000000,
+                      contents_coverage: 500000, deductible: "standard",
+                      riders: ["fire","theft"] },
+    "UserInfo": { phone: "13812345678" }     ← now in DomainModel
+  }
+
+  --- RESPONSE (Layer 3) ---
+  "Got it! Here's what I've updated:
+   ✅ Coverage type: both (building + contents)
+   ✅ Building coverage: 2,000,000 CNY
+   ✅ Contents coverage: 500,000 CNY
+   ✅ Deductible: standard
+   ✅ Riders: fire, theft
+   ✅ Phone: 13812345678 — confirmed
+
+   Let me assess your risk now..."
+
   → guard passed → enter assess_risk
 
 -- assess_risk ---------------------------------------------------
@@ -96,6 +180,11 @@ User:   "Yes, I'll purchase it"
 
 | Feature | How Demonstrated |
 |---------|-----------------|
+| Parallel two-LLM extraction | LLM 1 (narrow scope) + LLM 2 (full schema) run concurrently each turn; merged by confidence matrix |
+| LLM 2 broad scan catches out-of-order fields | User mentions phone in `collect_property_info`; LLM 2 catches it; confirmed in next state |
+| Merge & confidence resolution | phone: LLM1(0.76 < 0.7) → fallback to LLM2(0.82 > 0.7) → use LLM2 value |
+| fieldExtractedList tracking | Only fields passing Extract→Validate→Transform appear in fieldExtractedList |
+| DomainModel = only verified data | phone fails Transform → NOT in collected_fields; UserInfo entity is partial but correct |
 | LLM info collection | `collect_property_info`, `collect_coverage_needs` — conversational data gathering |
 | Tool calling | `lookup_property_record` called by LLM to verify address |
 | Deterministic business logic | `assess_risk`, `calculate_premium` — pure code, no LLM |
@@ -107,18 +196,28 @@ User:   "Yes, I'll purchase it"
 
 ```json
 [
-  {"ts":"10:15:00","state":"collect_property_info", "action":"llm_query",  "tokens":120, "output":"property_type=apartment,address=..."},
-  {"ts":"10:15:05","state":"collect_property_info", "action":"tool_call",  "tool":"lookup_property_record", "args":{"address":"88 Nanjing Road, Shanghai"}, "result":{"flood_zone":"low","crime_rate":"low"}},
-  {"ts":"10:15:05","state":"collect_property_info", "action":"transition", "from":"collect_property_info","to":"collect_coverage_needs","guard":"all_fields_present","result":"passed"},
-  {"ts":"10:15:15","state":"collect_coverage_needs", "action":"transition", "from":"collect_coverage_needs","to":"assess_risk","guard":"building_coverage>0","result":"passed"},
-  {"ts":"10:15:15","state":"assess_risk",           "action":"code_exec",  "fn":"compute_risk_score","input":{"age":11,"material":"concrete"},"result":{"risk_score":18,"rate_multiplier":0.872}},
-  {"ts":"10:15:15","state":"assess_risk",           "action":"transition", "from":"assess_risk","to":"calculate_premium","guard":"exit_guard_pass","result":"passed"},
-  {"ts":"10:15:15","state":"calculate_premium",     "action":"code_exec",  "fn":"compute_home_premium","result":{"annual_premium":6104,"monthly_premium":508.67}},
-  {"ts":"10:15:15","state":"calculate_premium",     "action":"transition", "from":"calculate_premium","to":"present_quote","guard":"annual_premium<50000","result":"passed"},
-  {"ts":"10:15:30","state":"present_quote",         "action":"interrupt",  "reason":"human_review"},
-  {"ts":"10:16:12","state":"present_quote",         "action":"approved",   "approver":"agent_wang"},
-  {"ts":"10:16:15","state":"present_quote",         "action":"transition", "from":"present_quote","to":"confirm_purchase","guard":"user_says_yes","result":"passed"},
-  {"ts":"10:16:15","state":"confirm_purchase",      "action":"code_exec",  "fn":"create_home_policy","result":{"policy_id":"HOM-2026-00142","status":"active"}},
+  {"ts":"10:15:00","state":"collect_property_info", "action":"llm_extract_narrow","tokens":85,
+   "target":"PropertyInfo fields","result":"property_type=apartment(0.94),address=...(0.91),building_age=9(0.87),floor_area=95(0.96),construction_material=concrete(0.93)"},
+  {"ts":"10:15:00","state":"collect_property_info", "action":"llm_extract_broad","tokens":210,
+   "target":"ALL schemas","result":"property_type=apartment(0.72),address=...(0.68),phone=138-1234-5678(0.85)"},
+  {"ts":"10:15:00","state":"collect_property_info", "action":"extract_merge","result":"5 fields from narrow + 1 candidate(phone) from broad"},
+  {"ts":"10:15:01","state":"collect_property_info", "action":"validate","result":"5/5 passed","fieldExtractedList":["property_type","address","building_age","floor_area","construction_material"]},
+  {"ts":"10:15:01","state":"collect_property_info", "action":"transform","result":"building_age cast 9→9(int)","phone: deferred for next state"},
+  {"ts":"10:15:02","state":"collect_property_info", "action":"tool_call","tool":"lookup_property_record","args":{"address":"88 Nanjing Road, Shanghai"},"result":{"flood_zone":"low","crime_rate":"low"}},
+  {"ts":"10:15:02","state":"collect_property_info", "action":"transition","from":"collect_property_info","to":"collect_coverage_needs","guard":"all_required_fields_non_null","result":"passed"},
+  {"ts":"10:15:08","state":"collect_coverage_needs", "action":"llm_extract_narrow","tokens":72,"result":"coverage_type=both(0.95),building_coverage=2000000(0.92),contents_coverage=500000(0.88),deductible=standard(0.90),riders=[fire,theft](0.91)"},
+  {"ts":"10:15:08","state":"collect_coverage_needs", "action":"llm_extract_broad","tokens":198,"result":"coverage_type=both(0.78),phone=13812345678(0.91)"},
+  {"ts":"10:15:08","state":"collect_coverage_needs", "action":"extract_merge","result":"phone: LLM2(0.91), user confirmed above → merged; fieldExtractedList+=[...,phone]"},
+  {"ts":"10:15:09","state":"collect_coverage_needs", "action":"transform","result":"phone: pattern pass, normalize → 13812345678"},
+  {"ts":"10:15:09","state":"collect_coverage_needs", "action":"transition","from":"collect_coverage_needs","to":"assess_risk","guard":"building_coverage>0","result":"passed"},
+  {"ts":"10:15:10","state":"assess_risk",           "action":"code_exec","fn":"compute_risk_score","input":{"age":9,"material":"concrete"},"result":{"risk_score":14,"rate_multiplier":0.856}},
+  {"ts":"10:15:10","state":"assess_risk",           "action":"transition","from":"assess_risk","to":"calculate_premium","guard":"exit_guard_pass","result":"passed"},
+  {"ts":"10:15:10","state":"calculate_premium",     "action":"code_exec","fn":"compute_home_premium","result":{"annual_premium":5992,"monthly_premium":499.33}},
+  {"ts":"10:15:10","state":"calculate_premium",     "action":"transition","from":"calculate_premium","to":"present_quote","guard":"annual_premium<50000","result":"passed"},
+  {"ts":"10:15:30","state":"present_quote",         "action":"interrupt","reason":"human_review"},
+  {"ts":"10:16:12","state":"present_quote",         "action":"approved","approver":"agent_wang"},
+  {"ts":"10:16:15","state":"present_quote",         "action":"transition","from":"present_quote","to":"confirm_purchase","guard":"user_says_yes","result":"passed"},
+  {"ts":"10:16:15","state":"confirm_purchase",      "action":"code_exec","fn":"create_home_policy","result":{"policy_id":"HOM-2026-00142","status":"active"}},
   {"ts":"10:16:15","state":"done",                  "action":"complete"}
 ]
 ```
@@ -273,10 +372,83 @@ This scenario demonstrates **guard-based alternate routing**: the `exit_guard` o
 
 ---
 
+## Scenario 4: Partial Extraction Failure — Phone Transform Fails
+
+**DomainModel invariant in action:** phone passes Extract and Validate but fails Transform
+(format mismatch). phone is NOT added to `collected_fields` — the UserInfo entity
+only contains verified data.
+
+```
+-- collect_policyholder_info -------------------------------------
+
+User:   "My name is Bob Smith, email bob@example.com,
+         phone is 555-1234"
+
+  --- EXTRACTION (parallel) ---
+  LLM 1 (narrow): { first_name: "Bob" (0.88), last_name: "Smith" (0.91),
+                    email: "bob@example.com" (0.94),
+                    phone: "555-1234" (0.76) }   ← low confidence
+  LLM 2 (broad):  { first_name: "Bob" (0.82), last_name: "Smith" (0.85),
+                    phone: "5551234" (0.82) }
+
+  --- MERGE ---
+  first_name: LLM1(0.88) ≥ LLM2(0.82) → use LLM1 → "Bob"
+  last_name:  LLM1(0.91) ≥ LLM2(0.85) → use LLM1 → "Smith"
+  email:      LLM1(0.94), LLM2(null)  → use LLM1 → "bob@example.com"
+  phone:      LLM1(0.76) < 0.7, LLM2(0.82) > 0.7 → use LLM2 → "5551234"
+
+  --- VALIDATE ---
+  first_name: type=string, minLength=1 → PASS
+  last_name:  type=string, minLength=1 → PASS
+  email:      type=string, format=email → PASS
+  phone:      type=string, pattern="^\\+?1?\\d{10}$" → PASS (10 digits)
+
+  --- TRANSFORM ---
+  first_name: op=trim → PASS → "Bob"
+  last_name:  op=trim → PASS → "Smith"
+  email:      op=trim → PASS → "bob@example.com"
+  phone:      op=normalize(to:+1NXXNXXXXXX) → FAIL
+               "5551234" → cannot format to +1 (missing area code)
+               → Transform FAILED
+
+  --- AgentState update ---
+  fieldExtractedList: ["first_name", "last_name", "email"]
+  collected_fields: {
+    "UserInfo": { first_name: "Bob", last_name: "Smith", email: "bob@example.com" }
+  }
+  NOTE: phone NOT in fieldExtractedList — Transform failed.
+        phone NOT in collected_fields — UserInfo entity is PARTIAL but CORRECT.
+        context_complete guard for UserInfo checks required: [first_name, last_name, email]
+        → all three present → guard passes → state advances
+
+  The bot does NOT ask about phone again in this state (it's optional in UserInfo).
+  If phone were required, the context_incomplete guard would keep the user in
+  this state and ask for a valid phone number.
+
+  --- RESPONSE (Layer 3) ---
+  "Thanks, Bob! Here's what I've captured:
+   ✅ First name: Bob
+   ✅ Last name: Smith
+   ✅ Email: bob@example.com
+   ❌ Phone: 555-1234 — couldn't validate (missing area code).
+        Can you provide a full number with area code, e.g., +1-416-555-1234?"
+
+  NOTE: The response explicitly tells the user which fields succeeded (✅)
+        and which failed (❌) with a reason. The failed field is re-requested
+        with format guidance. The DomainModel already contains the 3 valid fields.
+```
+
+---
+
 ## Cross-Reference
 
 | Concept | Quote Path | Claim Path |
 |---------|-----------|------------|
+| Parallel two-LLM extraction | `collect_property_info` (LLM1 narrow + LLM2 broad) | — |
+| Confidence-based merge | phone: LLM1(0.76) → LLM2(0.82) | — |
+| fieldExtractedList tracking | 5 fields passed → list updated | — |
+| DomainModel = only verified data | phone fails Transform → NOT in collected_fields | — |
+| Response: success/failure report | ✅ address / ❌ phone with reason | — |
 | LLM data collection | `collect_property_info` | `file_claim` |
 | Deterministic validation | `assess_risk` | `validate_claim` |
 | LLM assessment | — | `assess_damage` |

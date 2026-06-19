@@ -291,7 +291,7 @@ Each state can carry 5 types of metadata, enforced at different points in the st
 
 > **Note on static verification:** The "static analysis" and "verification tool" referenced above refers to a planned YAML linter and test generator (design TBD) that reads preconditions, postconditions, and invariants to catch contract violations before deployment. This tooling is out of scope for the current design document; see Appendix C.7 for related open questions.
 >
-> **Note on errorNode:** errorNode provides unified error handling, defined in Routing & Execution spec Section 6.
+> **Note on errorNode:** errorNode provides unified error handling, defined in [Routing & Execution §6.5](./2026-06-17-routing-execution-layer-design.md).
 
 ### 3.2 Example Patterns
 
