@@ -1,7 +1,16 @@
 """Simulated LLM-driven functional tests.
 
-Requires: DEEPSEEK_API_KEY env var (or set in Gateway) for real LLM simulation.
-Without API key, tests are skipped with a helpful message.
+Multi-model support via environment variables:
+  LLM_MODEL     — model name (deepseek-v4-flash | gpt-5-nano | ...)
+  LLM_BASE_URL  — API base URL
+  LLM_API_KEY   — API key
+
+Quick switch:
+  # DeepSeek (default)
+  export LLM_MODEL=deepseek-v4-flash LLM_BASE_URL=https://api.deepseek.com/v1 LLM_API_KEY=sk-...
+
+  # GPT-5 Nano
+  export LLM_MODEL=gpt-5-nano LLM_BASE_URL=https://api.openai.com/v1 LLM_API_KEY=sk-...
 """
 import os
 import pytest
@@ -18,8 +27,8 @@ from tests.sim_client import (
 )
 
 needs_llm = pytest.mark.skipif(
-    not os.environ.get("DEEPSEEK_API_KEY"),
-    reason="DEEPSEEK_API_KEY not set — set it to run simulated LLM tests",
+    not os.environ.get("LLM_API_KEY"),
+    reason="LLM_API_KEY not set — export LLM_API_KEY=sk-... to run simulated LLM tests",
 )
 
 
@@ -32,7 +41,11 @@ def live_agent():
         seed_loan_officers(session)
     finally:
         session.close()
-    gw = Gateway(api_key=os.environ.get("DEEPSEEK_API_KEY", "sk-placeholder"))
+    gw = Gateway(
+        model=os.environ.get("LLM_MODEL", "deepseek-v4-flash"),
+        base_url=os.environ.get("LLM_BASE_URL", "https://api.deepseek.com/v1"),
+        api_key=os.environ.get("LLM_API_KEY", "sk-placeholder"),
+    )
     return Agent(gw)
 
 

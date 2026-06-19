@@ -40,6 +40,8 @@ class MockGateway(Gateway):
         # Check status
         if "status" in msg and ("my" in msg or "check" in msg):
             return IntentClassificationResult(intent="check_quote_status", confidence=1.0)
+        if "application" in msg or "pending" in msg:
+            return IntentClassificationResult(intent="check_quote_status", confidence=1.0)
 
         # Loan officer: leads
         if "leads" in msg:
@@ -354,3 +356,164 @@ def test_scenario_rate_matrix_tool(agent):
     p1 = _calculate_monthly_payment(400000, 6.0, 360)
     p2 = _calculate_monthly_payment(400000, 8.0, 360)
     assert p2 > p1  # higher rate = higher payment
+
+
+# ═════════════════════════════════════════════════════════════
+# Edge Case Scenarios: wrong values, corrections, topic jumps,
+# clarifying questions, stubborn customer guidance
+# ═════════════════════════════════════════════════════════════
+
+# ── Scenario 10: Customer gives wrong value → corrects it ──
+def test_scenario_correction_wrong_value(agent):
+    """Customer says $800k home, then 'wait, I meant $500k' — value overwritten."""
+    user_id, utype = "eva_ft", "borrower"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Eva")
+
+    resp, state = _step(agent, state, "Hi, I want mortgage rates", user_id, utype, "Eva")
+    resp, state = _step(agent, state, "I'm buying", user_id, utype, "Eva")
+    assert state.collected_data.get("loan_purpose") == "purchase"
+
+    # Give wrong value
+    resp, state = _step(agent, state, "Home is worth 800000", user_id, utype, "Eva")
+    assert state.collected_data.get("home_value") == 800000
+
+    # Correct it
+    resp, state = _step(agent, state, "Oh wait, I meant the home is worth 500000, sorry", user_id, utype, "Eva")
+    assert state.collected_data.get("home_value") == 500000
+
+
+# ── Scenario 11: Customer asks a clarifying question mid-flow ──
+def test_scenario_clarifying_question(agent):
+    """Customer asks 'what's a conventional loan?' then continues."""
+    user_id, utype = "frank_ft", "borrower"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Frank")
+
+    resp, state = _step(agent, state, "I want to check rates", user_id, utype, "Frank")
+    resp, state = _step(agent, state, "I'm buying", user_id, utype, "Frank")
+    assert state.collected_data.get("loan_purpose") == "purchase"
+
+    # Frank asks a clarifying question
+    resp, state = _step(agent, state, "By the way, what kinds of loans do you offer?", user_id, utype, "Frank")
+    # Agent should respond helpfully, not lose collected data
+    assert state.collected_data.get("loan_purpose") == "purchase"
+
+    # Frank continues
+    resp, state = _step(agent, state, "Home is worth 500000", user_id, utype, "Frank")
+    assert state.collected_data.get("home_value") == 500000
+
+
+# ── Scenario 12: Customer changes loan purpose mid-flow ──
+def test_scenario_change_loan_purpose(agent):
+    """Customer says buying, then changes to refinance."""
+    user_id, utype = "grace_ft", "borrower"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Grace")
+
+    resp, state = _step(agent, state, "I want mortgage rates", user_id, utype, "Grace")
+    resp, state = _step(agent, state, "I'm buying a home", user_id, utype, "Grace")
+    assert state.collected_data.get("loan_purpose") == "purchase"
+
+    # Actually, I'm refinancing
+    resp, state = _step(agent, state, "Actually I want to refinance, not buy", user_id, utype, "Grace")
+    assert state.collected_data.get("loan_purpose") == "refinance"
+
+
+# ── Scenario 13: Customer provides multiple fields in one message ──
+def test_scenario_multiple_fields_at_once(agent):
+    """Customer says home value, loan amount, and location in one message."""
+    user_id, utype = "henry_ft", "borrower"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Henry")
+
+    resp, state = _step(agent, state, "I want rates for buying a home in California, it's worth 500000 and I need 300000 loan", user_id, utype, "Henry")
+    assert state.collected_data.get("loan_purpose") == "purchase"
+    assert state.collected_data.get("state") == "CA"
+    assert state.collected_data.get("home_value") == 500000
+    assert state.collected_data.get("loan_amount") == 300000
+
+    # Agent should ask for remaining field (credit score)
+    assert "credit" in resp.lower()
+
+
+# ── Scenario 14: Stubborn customer gives vague answers — agent persists ──
+def test_scenario_agent_guides_vague_customer(agent):
+    """Customer says 'I don't know' — agent should offer guidance."""
+    user_id, utype = "iris_ft", "borrower"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Iris")
+
+    resp, state = _step(agent, state, "Hi, can I get a mortgage?", user_id, utype, "Iris")
+    resp, state = _step(agent, state, "I'm not sure, I want to buy something", user_id, utype, "Iris")
+    # Agent should still ask for next field, collected_data should capture what it can
+    assert "value" in resp.lower() or "home" in resp.lower() or "property" in resp.lower()
+
+    # Iris gives more vague info
+    resp, state = _step(agent, state, "I guess the home is worth something like 500000 maybe?", user_id, utype, "Iris")
+    assert state.collected_data.get("home_value") == 500000
+
+    # Iris is confused about credit
+    resp, state = _step(agent, state, "I don't really know my credit score, is that bad?", user_id, utype, "Iris")
+    # Agent should still be guiding — credit score range extracted or asking again
+    assert resp  # at least got a response
+
+
+# ── Scenario 15: Customer jumps between topics ──
+def test_scenario_topic_jumping(agent):
+    """Customer: rates → help → status → back to providing info."""
+    user_id, utype = "jack_ft", "borrower"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Jack")
+
+    resp, state = _step(agent, state, "What rates do you have?", user_id, utype, "Jack")
+    resp, state = _step(agent, state, "I'm buying", user_id, utype, "Jack")
+
+    # Jump: ask what the agent can do
+    resp, state = _step(agent, state, "Wait, what exactly can you help me with?", user_id, utype, "Jack")
+    assert "rate" in resp.lower() or "quote" in resp.lower()
+
+    # Jump: check status (even though no lead yet)
+    resp, state = _step(agent, state, "Do I have any pending applications?", user_id, utype, "Jack")
+    assert "submitted" in resp.lower() or "review" in resp.lower() or "lead" in resp.lower()
+
+    # Back to providing info
+    resp, state = _step(agent, state, "OK the home is worth 500000", user_id, utype, "Jack")
+    assert state.collected_data.get("home_value") == 500000
+
+
+# ── Scenario 16: Customer asks about fees before completing ──
+def test_scenario_asks_about_fees(agent):
+    """Customer asks 'what are the fees?' mid-collection, then finishes."""
+    user_id, utype = "karen_ft", "borrower"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Karen")
+
+    resp, state = _step(agent, state, "I want to check mortgage rates", user_id, utype, "Karen")
+    resp, state = _step(agent, state, "Buying a home", user_id, utype, "Karen")
+    resp, state = _step(agent, state, "Home is worth 500000", user_id, utype, "Karen")
+
+    # Interrupt: ask about costs
+    resp, state = _step(agent, state, "What kind of fees should I expect?", user_id, utype, "Karen")
+    # Agent should respond — at least not crash, ideally mention something about fees or continue
+    assert resp
+
+    # Continue providing info — collected data from before should be intact
+    assert state.collected_data.get("home_value") == 500000
+    resp, state = _step(agent, state, "Need 300000 loan", user_id, utype, "Karen")
+    assert state.collected_data.get("loan_amount") == 300000
+
+
+# ── Scenario 17: Customer rejects quote, starts over ──
+def test_scenario_reject_quote_restart(agent):
+    """Customer completes flow, gets quote, then starts a new inquiry."""
+    user_id, utype = "leo_ft", "borrower"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Leo")
+
+    # First inquiry
+    resp, state = _step(agent, state, "Hi, I want rates", user_id, utype, "Leo")
+    resp, state = _step(agent, state, "Buying", user_id, utype, "Leo")
+    resp, state = _step(agent, state, "Home worth 500000", user_id, utype, "Leo")
+    resp, state = _step(agent, state, "Need 300000 loan", user_id, utype, "Leo")
+    resp, state = _step(agent, state, "In California", user_id, utype, "Leo")
+    resp, state = _step(agent, state, "Credit score 720", user_id, utype, "Leo")
+    assert state.phase == "completed"
+
+    # Leo wants to try again with different numbers
+    resp, state = _step(agent, state, "I want to check rates for another property", user_id, utype, "Leo")
+    # For now, post-completion stays completed — agent acknowledges but doesn't auto-restart
+    assert state.phase == "completed"
+    assert resp  # got a response

@@ -1,6 +1,22 @@
-"""LLM Gateway: JSON validation, retry, output_schema enforcement."""
+"""LLM Gateway: JSON validation, retry, output_schema enforcement.
+
+Multi-model support via environment variables:
+  LLM_MODEL     — model name (default: deepseek-v4-flash)
+  LLM_BASE_URL  — API base URL (default: https://api.deepseek.com/v1)
+  LLM_API_KEY   — API key (default: sk-placeholder)
+
+Examples:
+  # DeepSeek (default)
+  export LLM_MODEL=deepseek-v4-flash
+
+  # GPT-5 Nano
+  export LLM_MODEL=gpt-5-nano
+  export LLM_BASE_URL=https://api.openai.com/v1
+  export LLM_API_KEY=sk-...
+"""
 import json
 import logging
+import os
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -8,8 +24,9 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "deepseek-v4-flash"
-DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
+DEFAULT_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
+DEFAULT_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com/v1")
+DEFAULT_API_KEY = os.environ.get("LLM_API_KEY", "sk-placeholder")
 
 
 class Gateway:
@@ -19,7 +36,7 @@ class Gateway:
         self,
         model: str = DEFAULT_MODEL,
         base_url: str = DEFAULT_BASE_URL,
-        api_key: str = "sk-placeholder",
+        api_key: str = DEFAULT_API_KEY,
         max_retries: int = 3,
     ):
         self.model = model
