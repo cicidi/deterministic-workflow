@@ -93,6 +93,21 @@ class QuoteModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class RevealRequestModel(Base):
+    """Privacy-preserving relay messages between borrower and loan officer."""
+    __tablename__ = "reveal_request"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    lead_id: Mapped[str] = mapped_column(String, ForeignKey("lead.id"), nullable=False)
+    from_user_id: Mapped[str] = mapped_column(String, nullable=False)
+    from_user_type: Mapped[str] = mapped_column(String, nullable=False)  # "borrower" or "loan_officer"
+    to_user_type: Mapped[str] = mapped_column(String, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    masked: Mapped[bool] = mapped_column(default=True)
+    contact_revealed: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 # Database setup
 engine = None
 

@@ -14,6 +14,9 @@ SYSTEM_INTENTS = [
     "ask_for_leads",
     "submit_quote",
     "register_loan_officer",
+    "ask_borrower_question",
+    "answer_officer_question",
+    "request_contact_info",
     "correction",
     "unrecognized_intent",
 ]
@@ -90,8 +93,10 @@ def classify_intent(
 
 
 def is_borrower_intent(intent: str) -> bool:
-    return intent in ("ask_about_rates", "provide_loan_info", "check_quote_status", "greet", "help")
+    return intent in ("ask_about_rates", "provide_loan_info", "check_quote_status",
+                       "answer_officer_question", "greet", "help", "ask_mortgage_question")
 
 
 def is_officer_intent(intent: str) -> bool:
-    return intent in ("ask_for_leads", "submit_quote", "register_loan_officer")
+    return intent in ("ask_for_leads", "submit_quote", "register_loan_officer",
+                       "ask_borrower_question", "request_contact_info", "ask_mortgage_question")

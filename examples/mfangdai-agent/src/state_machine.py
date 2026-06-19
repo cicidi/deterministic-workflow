@@ -21,7 +21,7 @@ import dataclasses
 import logging
 from typing import Optional
 
-from src.db import get_session, LoanOfficerModel
+from src.db import get_session, LoanOfficerModel, RevealRequestModel
 from src.executors.classify import (
     classify_intent,
     is_borrower_intent,
@@ -73,6 +73,8 @@ class Agent:
 
     def __init__(self, gateway: Gateway):
         self.gateway = gateway
+        from src.knowledge import KnowledgePool
+        self.knowledge = KnowledgePool()
 
     def process(
         self,
@@ -114,6 +116,9 @@ class Agent:
             if is_officer_intent(intent):
                 return self._handle_officer(state, intent_result)
 
+            if intent == "ask_mortgage_question":
+                return self._handle_knowledge_question(state, user_message)
+
             fallback = format_help_response(user_type)
             state = _clone(state, messages=state.messages + [{"role": "assistant", "content": fallback}])
             return {"response": fallback, "state": state, "phase": state.phase}
@@ -121,7 +126,19 @@ class Agent:
         except Exception as e:
             return _error_response(state, str(e))
 
-    # ── Borrower handlers (each ≤50 lines) ──
+    # ── Knowledge handler ──
+
+    def _handle_knowledge_question(self, state: AgentState, user_message: str) -> dict:
+        """Answer mortgage questions from the knowledge pool, with fallback to contact support."""
+        answer = self.knowledge.answer(user_message)
+        if "don't have" in answer:
+            answer += (
+                "\n\nIf you'd like, I can forward your question to our support team at help@mratequote.com, "
+                "or broadcast it to our network of loan officers who may be able to help. "
+                "Would you like me to do that?"
+            )
+        state = _clone(state, messages=state.messages + [{"role": "assistant", "content": answer}])
+        return {"response": answer, "state": state, "phase": state.phase}
 
     def _handle_borrower(self, state: AgentState, intent_result: IntentClassificationResult) -> dict:
         intent = intent_result.intent
@@ -133,6 +150,10 @@ class Agent:
             )
             state = _clone(state, messages=state.messages + [{"role": "assistant", "content": response}])
             return {"response": response, "state": state, "phase": state.phase}
+
+        if intent == "ask_mortgage_question":
+            user_msg = state.messages[-1]["content"] if state.messages else ""
+            return self._handle_knowledge_question(state, user_msg)
 
         if intent == "ask_about_rates" and state.phase == "collecting_info" and not state.collected_data:
             prompt = get_prompt_for_field("loan_purpose")
@@ -201,6 +222,10 @@ class Agent:
 
     def _handle_officer(self, state: AgentState, intent_result: IntentClassificationResult) -> dict:
         intent = intent_result.intent
+
+        if intent == "ask_mortgage_question":
+            user_msg = state.messages[-1]["content"] if state.messages else ""
+            return self._handle_knowledge_question(state, user_msg)
 
         if intent == "ask_for_leads":
             return self._officer_ask_for_leads(state)

@@ -16,5 +16,6 @@ class AgentState:
     quote: Optional[dict[str, Any]] = None
     loan_officer_id: Optional[str] = None
     borrower_id: Optional[str] = None
+    current_lead_id: Optional[str] = None
     return_stack: list[str] = field(default_factory=list)
     error: Optional[str] = None

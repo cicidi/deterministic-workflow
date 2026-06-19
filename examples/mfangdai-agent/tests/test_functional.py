@@ -43,7 +43,7 @@ class MockGateway(Gateway):
         if "application" in msg or "pending" in msg:
             return IntentClassificationResult(intent="check_quote_status", confidence=1.0)
 
-        # Loan officer: leads
+        # Loan officer intents (MUST check before knowledge — "loan" keyword overlap)
         if "leads" in msg:
             entities = {}
             for state_name, abbr in [("california", "CA"), ("new york", "NY"), ("texas", "TX"),
@@ -57,8 +57,18 @@ class MockGateway(Gateway):
         if "register" in msg:
             return IntentClassificationResult(intent="register_loan_officer", confidence=1.0)
 
+        # Knowledge questions (mortgage FAQ) — before submit_quote to avoid "offer" false match
+        knowledge_kw = ("fha", "va loan", "usda", "conventional loan", "jumbo loan",
+                        "down payment", "closing cost", "pmi", "apr", "mortgage insurance",
+                        "credit score", "refinanc", "dti", "debt", "discount point",
+                        "underwrit", "pre-approv", "mratequote", "fixed rate", "adjustable",
+                        "rate lock", "mortgage product", "mortgage application", "explain")
+        if any(kw in msg for kw in knowledge_kw) and ("?" in msg or "what" in msg or "how" in msg
+                                                      or "explain" in msg or "can you" in msg or "tell" in msg):
+            return IntentClassificationResult(intent="ask_mortgage_question", confidence=1.0)
+
         # Loan officer: submit quote
-        if "offer" in msg or "give" in msg or ("6." in msg and "%" in msg):
+        if ("offer" in msg and "%" in msg) or ("give" in msg and "%" in msg) or ("6." in msg and "%" in msg):
             return IntentClassificationResult(intent="submit_quote", confidence=1.0, entities={"interest_rate": 6.5})
 
         # Loan officer: providing registration info (NMLS, licensing)
@@ -636,3 +646,64 @@ def test_scenario_multiple_officers_same_lead(agent):
     # Dave checks — should have a quote
     resp, dave_state = _step(agent, dave_state, "What's the status?", "dave_mq", "borrower", "Dave")
     assert resp
+
+
+# ═════════════════════════════════════════════════════════════
+# Knowledge Pool Q&A: mortgage FAQ questions
+# ═════════════════════════════════════════════════════════════
+
+# ── Scenario 22: Borrower asks mortgage knowledge questions ──
+def test_scenario_knowledge_pool_borrower(agent):
+    """Borrower asks about FHA loans, gets answer from knowledge pool."""
+    user_id, utype = "molly_kb", "borrower"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Molly")
+
+    resp, state = _step(agent, state, "What is an FHA loan?", user_id, utype, "Molly")
+    assert "FHA" in resp or "Federal Housing" in resp or "government" in resp.lower()
+
+    resp, state = _step(agent, state, "How much down payment do I need?", user_id, utype, "Molly")
+    assert "down" in resp.lower() and ("%" in resp or "percent" in resp.lower())
+
+    resp, state = _step(agent, state, "What credit score is required for a mortgage?", user_id, utype, "Molly")
+    assert "620" in resp or "580" in resp or "credit" in resp.lower()
+
+
+# ── Scenario 23: Loan officer asks product knowledge ──
+def test_scenario_knowledge_pool_officer(agent):
+    """Loan officer asks about mortgage products available on the platform."""
+    user_id, utype = "nick_kb", "loan_officer"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Nick")
+
+    resp, state = _step(agent, state, "What mortgage products does mRateQuote offer?", user_id, utype, "Nick")
+    assert "conventional" in resp.lower() or "FHA" in resp or "VA" in resp
+
+    resp, state = _step(agent, state, "Can you explain PMI?", user_id, utype, "Nick")
+    assert "PMI" in resp or "insurance" in resp.lower() or "mortgage" in resp.lower()
+
+
+# ── Scenario 24: Unknown question returns helpful fallback ──
+def test_scenario_knowledge_pool_unknown_question(agent):
+    """Question outside knowledge base returns helpful fallback message."""
+    user_id, utype = "olivia_kb", "borrower"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Olivia")
+
+    resp, state = _step(agent, state, "What's the weather like in Florida?", user_id, utype, "Olivia")
+    assert "officer" in resp.lower() or "knowledge" in resp.lower() or "help" in resp.lower() or "information" in resp.lower()
+
+
+# ── Scenario 25: Knowledge question mid-flow doesn't lose state ──
+def test_scenario_knowledge_mid_flow(agent):
+    """Borrower asks knowledge question during rate inquiry, then continues."""
+    user_id, utype = "peter_kb", "borrower"
+    state = AgentState(user_id=user_id, user_type=utype, user_name="Peter")
+
+    resp, state = _step(agent, state, "I want mortgage rates", user_id, utype, "Peter")
+    resp, state = _step(agent, state, "Buying", user_id, utype, "Peter")
+    assert state.collected_data.get("loan_purpose") == "purchase"
+
+    resp, state = _step(agent, state, "What is a conventional loan?", user_id, utype, "Peter")
+    assert "conventional" in resp.lower() or "Fannie" in resp or "Freddie" in resp
+    assert state.collected_data.get("loan_purpose") == "purchase"
+
+    resp, state = _step(agent, state, "Home worth 500000", user_id, utype, "Peter")
+    assert state.collected_data.get("home_value") == 500000
