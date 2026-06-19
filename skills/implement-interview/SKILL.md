@@ -49,6 +49,16 @@ Start with exactly one question:
 
 This determines which levels are asked:
 
+### META: PRD Check (always second, before Level 1)
+
+Ask:
+
+> "Do you already have a PRD (Product Requirements Document) for this product? If yes, share it and I'll use it as the source of truth. If no, I'll generate one from our interview."
+
+**If PRD exists:** Read it. Use it as the authoritative source for all questions. Skip questions already answered in the PRD. Fill remaining gaps via interview.
+
+**If no PRD:** Proceed with the interview. The output will include a generated PRD that the developer must approve before code generation begins.
+
 | Time   | Level 1 | Level 2 | Level 3 | Level 4 |
 |--------|---------|---------|---------|---------|
 | 15 min | Yes     | No      | No      | No      |
@@ -131,9 +141,72 @@ The following framework-level decisions use spec defaults. Do NOT ask the develo
 | Retry budget | LLM nodes: 3 attempts; deterministic nodes: 2 attempts | routing-execution-layer-design §5 |
 | Error handling | All errors → unified errorNode | routing-execution-layer-design §5.2 |
 
+### Completeness Verification (MANDATORY before code generation)
+
+**Purpose:** Prevent the "yolo aggressive → skip everything → declare done too early" failure mode. This phase runs AFTER the interview and BEFORE any code is generated. It is NOT optional.
+
+1. **Requirement ↔ Spec traceability:** For every user-stated requirement, identify which section of the generated spec covers it. If any requirement has no coverage, go back and ask.
+
+2. **Artifacts discovery:** Ask explicitly:
+   - "Do you have existing API documentation, Postman collections, or test suites I should review?"
+   - "Is there existing code (even in another language) that implements part of this?"
+   - "Are there competitor products or reference systems I should understand?"
+
+3. **Multi-party interaction check:** If the system involves 2+ user types (e.g., borrower + loan officer), ask:
+   - "Do these users need to communicate with each other through the agent?"
+   - "Does the agent need to hide any information from either party?"
+   - "Are there payment gates or access control between parties?"
+
+4. **Privacy & security check:**
+   - "What contact information should be visible to whom?"
+   - "Are there PII (personally identifiable information) concerns?"
+   - "Is there a payment or subscription model involved?"
+
+5. **Testing requirements check:**
+   - "What test scenarios are most important to you? (beyond the happy path)"
+   - "Should tests include edge cases like wrong values, corrections, and topic jumps?"
+   - "Do you want simulated LLM-driven conversation tests in addition to deterministic ones?"
+
+6. **Output format check:**
+   - "Should the agent be accessible via CLI, REST API, MCP server, or A2A protocol?"
+   - "What authentication method should the agent use?"
+
+7. **Completeness self-audit:** Before declaring interview complete, verify:
+   - Every user-stated requirement → has a spec section
+   - Every spec section → has at least one decision made (not deferred)
+   - Every entity → has fields defined
+   - Every state → has transitions defined
+   - Every strategy → has an explicit choice (not "default, didn't ask")
+
+If ANY check fails, add the missing item to the interview and ask the developer. Do NOT fill gaps with assumptions — ask.
+
 ## Code Generation
 
-After the interview completes, generate a runnable Python project.
+**PRD MUST come first.** Before generating any code, produce a PRD document (`PRD.md`) and get developer approval. Code is generated from the approved PRD, not from interview notes.
+
+### PRD Generation (Phase 5 — before code)
+
+After the Completeness Verification passes, generate a Product Requirements Document with:
+
+```markdown
+# [Product Name] — Product Requirements Document
+
+## 1. Product Summary
+## 2. User Personas (who, goals, constraints)
+## 3. Core Workflows (with conversation examples)
+## 4. Domain Model (entities, states, transitions)
+## 5. Feature Checklist (every feature, with status)
+## 6. Architecture (three layers, strategy decisions)
+## 7. Test Coverage Plan (scenarios to test)
+## 8. Out of Scope (explicitly deferred features)
+## 9. Open Questions
+```
+
+**Review gate:** Present the PRD to the developer. Do NOT proceed to code generation until the developer approves it. If the developer finds gaps, iterate on the PRD.
+
+### Code Generation (Phase 6 — after PRD approved)
+
+After the PRD is approved, generate a runnable Python project.
 
 ### Project Structure
 
@@ -212,19 +285,28 @@ Next: cd {dir} && pip install -r requirements.txt && python main.py
 
 ## Rules
 
-- If the developer says "I don't know" for any question, use the **default recommendation** from the relevant spec. Do not probe further.
-- If a question doesn't apply (e.g., "no external APIs"), skip it and move on.
+- If the developer says "I don't know" for any question, use the **default recommendation** from the relevant spec.
+- If a question doesn't apply, confirm with the developer before skipping — don't silently drop it.
 - Every generated code file references the spec section it implements in a comment.
 - The generated `test_workflow.py` must pass with `python -m pytest` out of the box (mocked LLM).
 - Never generate more than one question per message during the interview phase.
-- Maintain the time budget. If Level 1 took 5 minutes and the budget is 15 minutes, skip to generation — don't squeeze in Level 2.
+- Maintain the time budget, but the **Completeness Verification phase** is mandatory regardless of time budget.
+- **"yolo aggressive" means move fast, not skip quality.** Never skip the completeness verification.
 
 ## Anti-Patterns
 
-| Symptom | Fix |
-|---------|-----|
-| Asking about extract/validate/transform strategy | These are framework defaults. Unless developer says "I want to change the extraction strategy," skip them. |
-| Asking all 14 questions on a 15-minute budget | Respect the time budget. Stop after Level 1 and generate with all defaults. |
+| Symptom | Why It's Wrong | Fix |
+|---------|---------------|-----|
+| Asking about extract/validate/transform strategy | These are framework defaults. Unless developer says "I want to change," skip them. | Only ask if developer pushes back on defaults. |
+| Asking all 14 questions on a 15-minute budget | Respect the time budget. | Stop after Level 1 and generate with all defaults. |
+| **Declaring "done" after code generation** | Code generation is NOT the end. The developer may have unstated requirements discovered during review. | Run Completeness Verification phase after generation. |
+| **Accepting "I want a chatbot" without asking about multi-party flows** | Most business systems have 2+ user types with different views. | Ask: "Who else uses this system? Do they see different things?" |
+| **Skipping the artifacts discovery question** | Existing APIs, Postman collections, and legacy code contain requirements you'll miss. | Always ask: "Do you have existing docs/tests/APIs I should review?" |
+| **Assuming "yolo aggressive" means skip everything** | It means move quickly, NOT skip quality gates. | Follow the process faster, don't drop steps. |
+| **Generating code before asking about output format** | Agent might need to be MCP server, CLI, or REST API — different code. | Ask in Completeness Verification step 6. |
+| **Not asking about privacy between user types** | Borrower and officer shouldn't see each other's contact info. You won't build it if you don't ask. | Ask in Completeness Verification step 3. |
+| **The "strategy defaults" trap** | Using spec defaults for extract/validate/transform is fine. But critical business decisions (payment model, privacy model, multi-party flows) have NO defaults — they MUST be asked. | Distinguish between "framework defaults" (safe to skip) and "business decisions" (must ask). |
+| **Committing = done** | Commits track progress, not completion. The work isn't done until the Completeness Verification passes. | Run the verification checklist before every "done" declaration. |
 | Generating a 50-page Markdown plan instead of code | The output is Python code. The only Markdown output is README.md with next steps. |
 | Asking prompt engineering questions | LLM prompts are generated from spec templates. Prompt optimization is a separate task. |
 | Generating files over 1000 lines | Split before writing. Use $ref for YAML, sub-modules for Python. |
