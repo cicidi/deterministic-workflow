@@ -19,5 +19,6 @@ To use it, invoke the ai-coworker-auto-tdd skill. It provides:
 - Anti-stall protocol (never stops until truly complete)
 - Self-managing task queue (auto-discovers and adds new tasks)
 - Incremental commit discipline (commit per change, PR at end)
+- **Final gate: ai-coworker-contrarian-review Mode 1** — writes GAPS.md, feeds next loop
 
 See the full skill at: `ai-coworker-skills/ai-coworker-auto-tdd/SKILL.md`

@@ -188,6 +188,23 @@ The following framework-level decisions use spec defaults. Do NOT ask the develo
 
 If ANY check fails, add the missing item to the interview and ask the developer. Do NOT fill gaps with assumptions — ask.
 
+### Final Gate: Contrarian Review (after PRD approved, before code)
+
+After the developer approves the PRD, invoke the **ai-coworker-contrarian-review** skill to adversarially review the PRD. The contrarian agent must:
+
+1. Challenge every assumption in the PRD
+2. Identify gaps, contradictions, and missing scenarios
+3. Ask: "What does the PRD NOT cover that it should?"
+
+**If contrarian finds no issues:** PRD is solid. Proceed to code generation.
+
+**If contrarian finds gaps:** Write a gap report (`GAPS.md`) listing every issue found. Present it to the developer. The developer decides:
+- Fix the gaps now (loop back to interview)
+- Defer to next iteration (add to "Out of Scope" in PRD, proceed to code)
+- Accept risk (document in PRD why the gap is accepted)
+
+Do NOT proceed to code generation until the contrarian review is complete and the gap report is resolved.
+
 ## Code Generation
 
 **PRD MUST come first.** Before generating any code, produce a PRD document (`PRD.md`) and get developer approval. Code is generated from the approved PRD, not from interview notes.
