@@ -1,0 +1,37 @@
+# Workflow Configuration
+# Source: implement-interview Level 3
+
+strategies:
+  extract_strategy: hybrid        # LLM-first + deterministic fallback
+  validate_strategy: durable_rules
+  transform_strategy: deterministic
+  response_strategy: pure_message
+  decision_strategy: rule_engine_only
+  rule_engine: durable_rules
+  permission_engine: native
+  llm_gateway_strategy: hybrid
+  llm_provider: deepseek
+
+auth:
+  provider: api_key               # MVP: api_key; production: keycloak
+  keycloak:
+    realm: mRateQuote
+    host: http://localhost:17842/auth
+
+env:
+  dev:
+    llm_model: deepseek-v4
+    db_url: sqlite:///mfangdai_test.db
+    mock_apis: true
+    checkpoint: memory
+
+retry:
+  llm_max_attempts: 3
+  deterministic_max_attempts: 2
+  backoff_seconds: 1
+
+tools:
+  external_apis: []
+  mcp_servers: []
+  rag: false
+  observability: none

@@ -1,0 +1,78 @@
+# Custom Intent Definitions
+# Source: implement-interview Level 2 + mfangdai Lead.java fields
+
+intents:
+  - name: ask_about_rates
+    description: "Borrower wants to know current mortgage rates or get a quote"
+    examples:
+      - "what are current mortgage rates"
+      - "I want to get a loan quote"
+      - "what rate can I get"
+      - "how much is the interest rate"
+      - "can you give me a mortgage estimate"
+    required_entities:
+      - loan_purpose
+      - home_value
+      - loan_amount
+      - state
+      - credit_score_range
+
+  - name: provide_loan_info
+    description: "Borrower provides specific loan/property information"
+    examples:
+      - "my home is worth 500000"
+      - "I want to borrow 400000"
+      - "my credit score is 720"
+      - "I'm in California"
+      - "I'm buying a new home"
+    required_entities: []
+
+  - name: check_quote_status
+    description: "Borrower wants to check on a previously submitted lead/quote"
+    examples:
+      - "what's the status of my quote"
+      - "did anyone respond to my lead"
+      - "any updates on my application"
+
+  - name: ask_for_leads
+    description: "Loan officer asks for available leads in their licensed states"
+    examples:
+      - "do you have any leads for California"
+      - "show me available leads"
+      - "what new leads are available in CA"
+      - "I want to see leads in my state"
+
+  - name: submit_quote
+    description: "Loan officer provides a rate quote for a specific lead"
+    examples:
+      - "I can offer 6.5% on lead XYZ"
+      - "quote: 30-year fixed at 6.25%"
+      - "submit a quote for this lead"
+
+  - name: register_loan_officer
+    description: "Loan officer wants to register on the platform"
+    examples:
+      - "I want to register as a loan officer"
+      - "sign me up as a lender"
+      - "how do I join the platform"
+    required_entities:
+      - first_name
+      - last_name
+      - nmls
+      - email
+      - licensed_states
+
+  - name: greet
+    description: "User says hello or starts conversation"
+    examples:
+      - "hi"
+      - "hello"
+      - "hey there"
+      - "good morning"
+
+  - name: help
+    description: "User asks for help or what the agent can do"
+    examples:
+      - "what can you do"
+      - "help me"
+      - "how does this work"

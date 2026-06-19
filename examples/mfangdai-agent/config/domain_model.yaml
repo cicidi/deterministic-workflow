@@ -1,0 +1,177 @@
+# Domain Model: mfangdai lead collection chatbot
+# Source: implement-interview Level 2 output
+
+entities:
+  borrower:
+    description: "Home buyer or homeowner seeking mortgage loan"
+    fields:
+      first_name:
+        type: string
+        required: true
+        description: "Borrower first name"
+      last_name:
+        type: string
+        required: true
+        description: "Borrower last name"
+      email:
+        type: string
+        required: true
+        description: "Contact email"
+      phone:
+        type: string
+        required: false
+        description: "Contact phone number"
+      credit_score_range:
+        type: enum
+        required: false
+        values: ["below_620", "620_639", "640_659", "660_679", "680_699", "700_719", "720_739", "740_759", "760_779", "780_799", "800_plus"]
+        description: "Self-reported credit score range"
+
+  loan_officer:
+    description: "Licensed mortgage professional (NMLS)"
+    fields:
+      first_name:
+        type: string
+        required: true
+      last_name:
+        type: string
+        required: true
+      nmls:
+        type: string
+        required: true
+        description: "Nationwide Mortgage Licensing System ID"
+      email:
+        type: string
+        required: true
+      phone:
+        type: string
+        required: false
+      licensed_states:
+        type: list
+        required: true
+        description: "States where officer can originate loans"
+      company_name:
+        type: string
+        required: false
+      products_provided:
+        type: list
+        required: false
+        description: "Mortgage products offered (e.g., conventional, FHA, VA, jumbo)"
+
+  lead:
+    description: "Mortgage loan application submitted by borrower"
+    fields:
+      borrower_id:
+        type: uuid
+        required: true
+      loan_purpose:
+        type: enum
+        required: true
+        values: ["purchase", "refinance"]
+        description: "Purchase or refinance"
+      home_value:
+        type: float
+        required: true
+        description: "Estimated property value in USD"
+      loan_amount:
+        type: float
+        required: true
+        description: "Amount borrower wants to borrow"
+      state:
+        type: string
+        required: true
+        description: "US state (2-letter code)"
+      zip_code:
+        type: string
+        required: false
+      credit_score_range:
+        type: enum
+        required: true
+        values: ["below_620", "620_639", "640_659", "660_679", "680_699", "700_719", "720_739", "740_759", "760_779", "780_799", "800_plus"]
+      loan_type:
+        type: enum
+        required: false
+        values: ["conventional", "FHA", "VA", "USDA", "jumbo"]
+      employment_status:
+        type: enum
+        required: false
+        values: ["employed", "self_employed", "retired", "unemployed"]
+      annual_household_income:
+        type: float
+        required: false
+      message:
+        type: string
+        required: false
+        description: "Free-text message from borrower"
+
+  quote:
+    description: "Rate quote provided by loan officer for a lead"
+    fields:
+      lead_id:
+        type: uuid
+        required: true
+      loan_officer_id:
+        type: uuid
+        required: true
+      interest_rate:
+        type: float
+        required: true
+        description: "Annual interest rate (%)"
+      loan_term_months:
+        type: integer
+        required: true
+        description: "Loan term (180=15yr, 360=30yr)"
+      monthly_payment:
+        type: float
+        required: true
+      apr:
+        type: float
+        required: false
+      product_name:
+        type: string
+        required: false
+        description: "e.g., 30-Year Fixed Conventional"
+
+# States for the chatbot workflow
+states:
+  collecting_info:
+    description: "Agent is gathering loan information from borrower"
+    entity: lead
+    state_hint: "Ask the next missing required field"
+  info_collected:
+    description: "All required fields collected, ready to create lead"
+    entity: lead
+    state_hint: "Validate and persist lead"
+  lead_created:
+    description: "Lead persisted to database"
+    entity: lead
+    state_hint: "Match lead to licensed loan officer"
+  officer_matched:
+    description: "Loan officer found for the lead's state"
+    entity: lead
+    state_hint: "Generate quote or notify officer"
+  quote_generated:
+    description: "Quote created for the lead"
+    entity: quote
+    state_hint: "Deliver quote to borrower"
+  completed:
+    description: "Workflow finished"
+    entity: lead
+    state_hint: "Ask borrower if they need anything else"
+
+transitions:
+  - from: collecting_info
+    to: info_collected
+    guard: "all_required_fields_filled(lead_data)"
+  - from: info_collected
+    to: lead_created
+    guard: "persist_lead_success"
+  - from: lead_created
+    to: officer_matched
+    guard: "matching_officer_found"
+  - from: officer_matched
+    to: quote_generated
+    guard: "quote_created"
+  - from: quote_generated
+    to: completed
+    guard: "quote_delivered"
