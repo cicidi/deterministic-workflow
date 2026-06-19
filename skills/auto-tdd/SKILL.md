@@ -16,9 +16,10 @@ To use it, invoke the ai-coworker-auto-tdd skill. It provides:
 
 - 3-agent arbitration loop (Agent-A impl, Agent-B test, Agent-C judge, Agent-D quality)
 - 举一反三 test writing protocol (Tier 1 mock → Tier 2 sim LLM → Tier 3 quality judge)
-- Anti-stall protocol (never stops until truly complete)
+- Completeness Gate — anti-stall protocol (never stops until truly complete)
 - Self-managing task queue (auto-discovers and adds new tasks)
 - Incremental commit discipline (commit per change, PR at end)
-- **Final gate: ai-coworker-contrarian-review Mode 1** — writes GAPS.md, feeds next loop
+- **Final Completeness Gate: ai-coworker-contrarian-review Mode 1** — writes GAPS.md, feeds next loop
+- **Use after implement-interview** to TDD the generated code to production quality
 
 See the full skill at: `ai-coworker-skills/ai-coworker-auto-tdd/SKILL.md`

@@ -13,7 +13,7 @@ user-invocable: true
 
 A developer says "I want to build X using this framework" and wants runnable code, not just a plan document. The skill interviews the developer through a time-boxed adaptive process and generates a complete Python project.
 
-**This skill IS the `spec-generator` from VISION.md**, upgraded to produce code instead of documents.
+**This skill IS the `spec-generator` from VISION.md**, upgraded to produce code instead of documents. This skill generates code AFTER the developer approves the PRD, consistent with the VISION.md principle that the FRAMEWORK spec contains no implementation code — generated projects are independent artifacts, not part of the framework spec.
 
 **Supported industries:** Any. The interview asks generic questions about users, workflows, entities, and decisions. The framework's three-layer architecture (NLU → Decision → Response) applies universally. Do NOT tailor questions to a specific industry unless the developer specifies one.
 
@@ -149,7 +149,9 @@ The following framework-level decisions use spec defaults. Do NOT ask the develo
 | Retry budget | LLM nodes: 3 attempts; deterministic nodes: 2 attempts | routing-execution-layer-design §5 |
 | Error handling | All errors → unified errorNode | routing-execution-layer-design §5.2 |
 
-### Completeness Verification (MANDATORY before code generation)
+### Completeness Gate — Completeness Verification (MANDATORY before code generation)
+
+**Shared term:** "Completeness Gate" is the umbrella term used across implement-interview, auto-tdd, and contrarian-review for preventing premature "done" declarations. See also: **auto-tdd § Completeness Gate — Anti-Stall Protocol** for the continuous TDD variant, and **ai-coworker-contrarian-review Mode 1** for the adversarial final gate.
 
 **Purpose:** Prevent the "yolo aggressive → skip everything → declare done too early" failure mode. This phase runs AFTER the interview and BEFORE any code is generated. It is NOT optional.
 
@@ -204,6 +206,13 @@ After the developer approves the PRD, invoke the **ai-coworker-contrarian-review
 - Accept risk (document in PRD why the gap is accepted)
 
 Do NOT proceed to code generation until the contrarian review is complete and the gap report is resolved.
+
+**Closed-loop rule:** After code generation, if gaps are found in the generated code (via contrarian review, testing, or developer review), the developer is given three options:
+- (a) **Fix gaps now** — loop back to interview to refine requirements, regenerate affected code
+- (b) **Defer** — add to PRD §8 "Out of Scope" with a target iteration, proceed with current scope
+- (c) **Update the PRD** — accept as a new requirement, update PRD to reflect it, then regenerate code for the expanded scope
+
+This closed-loop ensures that every gap discovered during any phase (interview, review, code generation, testing) is explicitly resolved, never silently dropped.
 
 ## Code Generation
 
