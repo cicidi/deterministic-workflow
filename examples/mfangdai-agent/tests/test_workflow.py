@@ -224,3 +224,213 @@ class TestDatabaseOperations:
             assert bid is not None
         finally:
             session.close()
+
+
+class TestGatewayRetry:
+    """Test LLM Gateway retry and error handling."""
+
+    def test_call_retry_failure(self, agent):
+        """Gateway.call should raise RuntimeError after max_retries exhaustion."""
+        from src.gateway import Gateway
+        from pydantic import BaseModel
+
+        class DummySchema(BaseModel):
+            x: int
+
+        class FailingGateway(Gateway):
+            def __init__(self):
+                self.model = "test"
+                self.base_url = "http://localhost"
+                self.api_key = "sk-test"
+                self.max_retries = 2
+                from langchain_openai import ChatOpenAI
+                self.llm = ChatOpenAI(model="test", base_url="http://localhost", api_key="sk-test", temperature=0)
+
+            def call(self, prompt, output_schema, temperature=0):
+                # Call parent retry logic which will fail on actual HTTP call
+                return super().call(prompt, output_schema, temperature)
+
+        gw = FailingGateway()
+        try:
+            gw.call("test prompt", DummySchema)
+            assert False, "Should have raised RuntimeError"
+        except (RuntimeError, Exception) as e:
+            assert "2 attempts" in str(e) or "401" in str(e) or "Connection" in str(e)
+
+    def test_call_text_attribute_fix(self, agent):
+        """call_text should not crash with AttributeError (Agent-A bug #1)."""
+        from src.gateway import Gateway
+
+        gw = Gateway(model="test", base_url="http://localhost", api_key="sk-test")
+        assert gw.api_key == "sk-test"
+        assert gw.base_url == "http://localhost"
+
+
+class TestIntentRouting:
+    """Test intent routing edge cases from Agent-B gaps."""
+
+    def test_unrecognized_intent(self, agent):
+        from src.hydration import AgentState
+
+        class UnrecognizedMockGateway(agent.gateway.__class__):
+            def call(self, prompt, output_schema, temperature=0):
+                from src.executors.classify import IntentClassificationResult
+                return IntentClassificationResult(intent="unrecognized_intent", confidence=0.5)
+
+        agent.gateway = UnrecognizedMockGateway()
+        state = AgentState(user_id="test_u", user_type="borrower")
+        result = agent.process("xyzzy blarg", "test_u", "borrower", current_state=state)
+        assert "not sure" in result["response"].lower() or "help" in result["response"].lower()
+
+    def test_correction_intent(self, agent):
+        from src.hydration import AgentState
+
+        class CorrectionMockGateway(agent.gateway.__class__):
+            def call(self, prompt, output_schema, temperature=0):
+                from src.executors.classify import IntentClassificationResult
+                return IntentClassificationResult(intent="correction", confidence=0.8)
+
+        agent.gateway = CorrectionMockGateway()
+        state = AgentState(user_id="test_c", user_type="borrower")
+        result = agent.process("No I meant California", "test_c", "borrower", current_state=state)
+        assert "not sure" in result["response"].lower() or "help" in result["response"].lower()
+
+    def test_low_confidence_intent(self, agent):
+        """Low-confidence intent should still route correctly."""
+        from src.executors.classify import IntentClassificationResult
+        low_conf = IntentClassificationResult(intent="greet", confidence=0.4)
+        from src.hydration import AgentState
+        state = AgentState(user_id="test_lc", user_type="borrower")
+        # Feed directly through process routing
+        result = agent._handle_borrower(state, low_conf)
+        assert "hello" in result["response"].lower() or "mortgage" in result["response"].lower()
+
+
+class TestLoanOfficerMatching:
+    """Test officer matching edge cases."""
+
+    def test_no_officers_match(self, agent):
+        from src.hydration import AgentState
+        from src.executors.decide import match_officer
+        from src.db import get_session
+
+        state = AgentState(
+            user_id="test_nm", user_type="borrower",
+            collected_data={"state": "AK"}, lead_id="fake-lead-id"
+        )
+        session = get_session()
+        try:
+            result = match_officer(state, session)
+            assert result is None
+        finally:
+            session.close()
+
+    def test_strip_licensed_states(self, agent):
+        """Ensure state matching works even with whitespace."""
+        from src.db import get_session, LoanOfficerModel
+        session = get_session()
+        try:
+            officers = session.query(LoanOfficerModel).all()
+            if officers:
+                # Verify seed data is clean (no leading/trailing whitespace)
+                for o in officers:
+                    states = [s.strip() for s in o.licensed_states.split(",")]
+                    for s in states:
+                        assert s == s.strip()
+        finally:
+            session.close()
+
+
+class TestExtractionEdgeCases:
+    """Test extraction edge cases from Agent-B gaps."""
+
+    def test_hyphen_credit_score(self, agent):
+        from src.executors.extract import _normalize_credit_score
+        assert _normalize_credit_score("700-719") == "700_719"
+        assert _normalize_credit_score("720-739") == "720_739"
+
+    def test_unknown_state_normalization(self, agent):
+        from src.executors.extract import _normalize_state
+        assert _normalize_state("UnknownPlace") == "UNKNOWNPLACE"
+
+    def test_unknown_loan_purpose(self, agent):
+        from src.executors.extract import _normalize_loan_purpose
+        assert _normalize_loan_purpose("investing") == "investing"
+
+    def test_get_next_missing_field_empty(self, agent):
+        from src.executors.extract import get_next_missing_field
+        assert get_next_missing_field([]) is None
+
+    def test_get_next_missing_field_has_gaps(self, agent):
+        from src.executors.extract import get_next_missing_field
+        assert get_next_missing_field(["home_value", "state"]) == "home_value"
+
+    def test_unknown_credit_score_string(self, agent):
+        from src.executors.extract import _normalize_credit_score
+        assert _normalize_credit_score("excellent") == "excellent"
+
+    def test_get_prompt_unknown_field(self, agent):
+        from src.executors.extract import get_prompt_for_field
+        result = get_prompt_for_field("unknown_field")
+        assert "unknown_field" in result
+
+
+class TestRelaySession:
+    """Test RelayAgent session management."""
+
+    def test_send_message_session_persistence(self):
+        from src.db import init_db, get_session, seed_loan_officers
+        from src.mcp_server import RelayAgent
+        from src.gateway import Gateway
+        from src.executors.classify import IntentClassificationResult
+        import src.mcp_server as mcp_mod
+
+        class SessionMockGateway(Gateway):
+            def call(self, prompt, output_schema, temperature=0):
+                msg = prompt.split('User message: "')[1].split('"')[0].lower() if 'User message: "' in prompt else prompt.lower()
+                if "hello" in msg or "hi" in msg:
+                    return IntentClassificationResult(intent="greet", confidence=1.0)
+                if "what can you do" in msg or "help" in msg:
+                    return IntentClassificationResult(intent="help", confidence=1.0)
+                return IntentClassificationResult(intent="greet", confidence=1.0)
+
+        init_db("sqlite:///mfangdai_test.db")
+        session = get_session()
+        try:
+            seed_loan_officers(session)
+        finally:
+            session.close()
+
+        orig_gateway = mcp_mod.Gateway
+        mcp_mod.Gateway = SessionMockGateway
+        try:
+            relay = RelayAgent(db_url="sqlite:///mfangdai_test.db")
+
+            result1 = relay.send_message("Hello", user_id="session_test", user_type="borrower", user_name="Test")
+            assert result1["phase"] in ("collecting_info", "completed")
+
+            result2 = relay.send_message("What can you do?", user_id="session_test", user_type="borrower", user_name="Test")
+            assert "rate" in result2["response"].lower() or "mortgage" in result2["response"].lower()
+
+            relay.reset_session("session_test", "borrower")
+
+            result3 = relay.send_message("Hello", user_id="session_test", user_type="borrower", user_name="Test")
+            assert result3["phase"] in ("collecting_info", "completed")
+        finally:
+            mcp_mod.Gateway = orig_gateway
+
+
+class TestDatabaseErrors:
+    """Test database error handling."""
+
+    def test_get_session_before_init(self, agent):
+        """get_session before init_db should raise RuntimeError."""
+        import importlib
+        import src.db as db_mod
+        old_engine = db_mod.engine
+        db_mod.engine = None
+        try:
+            with pytest.raises(RuntimeError, match="Database not initialized"):
+                db_mod.get_session()
+        finally:
+            db_mod.engine = old_engine

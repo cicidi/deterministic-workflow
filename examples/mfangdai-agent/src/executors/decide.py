@@ -53,6 +53,8 @@ def _calculate_monthly_payment(loan_amount: float, annual_rate: float, term_mont
 
 def create_borrower(state: AgentState, session: Session) -> str:
     """Create a borrower record from collected data. Returns borrower_id."""
+    import uuid as _uuid
+
     name_parts = (state.user_name or state.collected_data.get("first_name", "User")).split()
     first = name_parts[0] if name_parts else "User"
     last = name_parts[1] if len(name_parts) > 1 else ""
@@ -60,7 +62,7 @@ def create_borrower(state: AgentState, session: Session) -> str:
     borrower = BorrowerModel(
         first_name=state.collected_data.get("first_name", first),
         last_name=state.collected_data.get("last_name", last),
-        email=state.collected_data.get("email", f"{state.user_id}@placeholder.com"),
+        email=state.collected_data.get("email", f"{state.user_id}-{_uuid.uuid4().hex[:8]}@placeholder.com"),
         phone=state.collected_data.get("phone"),
         credit_score_range=state.collected_data.get("credit_score_range"),
     )
@@ -98,7 +100,7 @@ def match_officer(state: AgentState, session: Session) -> Optional[dict]:
     officers = session.query(LoanOfficerModel).all()
 
     for officer in officers:
-        licensed = officer.licensed_states.split(",") if officer.licensed_states else []
+        licensed = [s.strip() for s in officer.licensed_states.split(",")] if officer.licensed_states else []
         if target_state in licensed:
             # Assign
             assignment = LeadAssignmentModel(

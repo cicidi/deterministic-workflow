@@ -23,6 +23,8 @@ class Gateway:
         max_retries: int = 3,
     ):
         self.model = model
+        self.base_url = base_url
+        self.api_key = api_key
         self.max_retries = max_retries
         self.llm = ChatOpenAI(
             model=model,

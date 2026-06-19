@@ -22,7 +22,13 @@ CREDIT_SCORE_MAP = {
 
 
 def _normalize_credit_score(score_str: str) -> str:
-    """Deterministic fallback: map numeric score to range bucket."""
+    """Deterministic fallback: map numeric score or hyphen range to range bucket."""
+    import re
+    hyphen = re.match(r"(\d+)\s*[-–]\s*(\d+)", str(score_str))
+    if hyphen:
+        score_str = f"{hyphen.group(1)}_{hyphen.group(2)}"
+    if score_str in CREDIT_SCORE_MAP.values():
+        return score_str
     try:
         score = int(float(score_str))
     except (ValueError, TypeError):
