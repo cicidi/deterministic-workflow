@@ -82,59 +82,47 @@ Framework merge (single-threaded reducer):
 
 **Conflict scenario — parallel sub-workflow + parent:**
 
-The only scenario where a write conflict is possible is an async sub-workflow and parent both writing to the same field (e.g., `collectedFields`). Instead of a lock, the framework uses a **conflict-detecting reducer**:
+The only scenario where a write conflict is possible is an async sub-workflow and parent both writing to the same field. The framework uses a single strategy: **append** — all parallel writes are accumulated, never overwritten.
 
 ```yaml
 state_reducers:
   collectedFields:
-    strategy: conflict_detect    # raise if concurrent write to same key
+    strategy: append    # deep merge: new keys added, existing keys preserved
   response:
-    strategy: last_write_wins    # acceptable: non-overlapping fields
+    strategy: append    # appended to response list for audit
   messages:
-    strategy: append             # append-only, no conflict possible
+    strategy: append    # appended to message history
 ```
 
-| Reducer Strategy | Behavior |
-|-----------------|----------|
-| `conflict_detect` | **Recommended default for regulated industries.** Rejects the update and routes to `errorNode` if same key is written by two sources in the same tick. Raises `StateConflictError`. |
-| `last_write_wins` | Second update overwrites first. Safe for non-overlapping fields. |
-| `append` | Append to list (for messages, audit log). |
-| `merge` | Deep merge dict keys where neither source writes the same leaf key. |
+**Why only append:** For a regulated-industry framework, no data should be silently lost. If two parallel nodes both produce output, both outputs are preserved. The downstream node (or human reviewer) decides which to use — the framework never discards data.
+
+Reducer behavior per type:
+
+| Field Type | Append Behavior |
+|------------|----------------|
+| List (messages, audit_log) | Append items to end of list |
+| Dict (collectedFields, entities) | Deep merge: new keys added, existing keys kept; same key from both sources → value wrapped in `[value_a, value_b]` for conflict visibility |
+| Scalar (response, intent) | Value wrapped in list: `[old, new]` |
 
 The framework guarantees that:
 1. Serial nodes — zero contention (each node sees previous node's output before running)
-2. Parallel LLM calls (goalChecker + generateResponse) — write different fields, no conflict
-3. Async sub-workflow + parent — reducer strategy declared per field
+2. Parallel LLM calls (goalChecker + generateResponse) — write different fields, each appended
+3. Async sub-workflow + parent — both results appended, never lost
 
-**Contrast with Java ConcurrentHashMap:**
+### 1.3 Append-Only Guarantee
 
-| | Java ConcurrentHashMap | Our agentState |
-|---|---|---|
-| Model | Shared mutable + segment lock | Copy-on-write + reducer merge |
-| Race condition risk | Low (lock) but possible on compound ops | Zero (no shared mutation) |
-| Overhead | Lock acquisition per write | Copy overhead per node (nanoseconds for small state) |
-| Parallel writes | Safe via locking | Safe via field isolation + reducers |
-
-### 1.3 Reducer Rule: Mandatory for Parallel Nodes
-
-When a workflow defines **parallel nodes** (nodes that run concurrently via `Send()` fan-out), a **reducer** MUST be declared for every `agentState` field that any parallel node writes to. This is not optional — it is a framework-level enforcement.
+All `agentState` fields use append-only semantics. This is not configurable — it is a framework-level enforcement. No parallel write is ever silently discarded.
 
 **Design-time enforcement (workflow design / skill interview):**
 
 ```
 Q: "Does this workflow have nodes that run in parallel?"
    ├── No → Skip. Serial nodes don't need reducers.
-   └── Yes → For EACH field written by a parallel node:
-              Define reducer: last_write_wins | conflict_detect | append | merge
+   └── Yes → All fields are append-only. No configuration needed.
+              Downstream nodes consume accumulated lists/dicts.
 ```
 
-**YAML declaration:**
-
-```yaml
-workflow:
-  parallel_nodes:
-    generate_response:
-      writes: [response, actions]
+**YAML declaration (for documentation only — behavior is enforced, not configured):**
     goal_checker:
       writes: [goal_check_result]
       # goal_check_result only written by this node → last_write_wins is safe
@@ -480,6 +468,10 @@ Sub-workflows are **complete, standalone workflows** with the same structure as 
 
 This prevents the zelkim anti-pattern where RAG logic is duplicated across conversational and transactional branches.
 
+**Deadlock protection:** Sub-workflows must not create circular invocation chains (A → B → A). The framework enforces this at two levels:
+- **Depth limit:** `max_sub_workflow_depth: 3` — after 3 nested sub-workflow levels, the conversation terminates with `errorNode`
+- **Cycle detection:** The framework tracks the sub-workflow call stack. If a sub-workflow is invoked while already present in the stack, the call is rejected with `StateConflictError` and routes to `errorNode`
+
 ### 5.2 Full Workflow Structure
 
 A sub-workflow has the **exact same structure** as a super workflow. No reduced subset:
@@ -772,7 +764,8 @@ Node execution
 # Global default
 error_handling:
   default_error_node: ask_clarify
-  max_total_errors: 5           # conversation-level: after 5 total errors → terminate
+  max_total_errors: 5               # conversation-level: after 5 total errors → terminate
+  max_conversation_duration_ms: 300000  # 5 min hard limit: after timeout → terminate
   errorNode_config:
     ask_clarify:
       max_clarifications: 3     # max re-prompts before escalating
@@ -791,6 +784,8 @@ nodes:
   calculate_premium:
     error_node: fallback_value     # use default rate on calculation failure
 ```
+
+Conversation-level budgets apply globally across all nodes in a conversation. When `max_total_errors` is exhausted OR `max_conversation_duration_ms` is exceeded, the conversation terminates regardless of per-node retry budget remaining. This bounds worst-case latency and prevents adversarial loops.
 
 ### 6.9 errorNode → Conversation Continuity
 

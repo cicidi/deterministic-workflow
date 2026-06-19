@@ -125,7 +125,7 @@ a2a_response:
 
   # --- Error (if status != completed) ---
   error:
-    category: llm_error | api_error | validation_error | permission_error | business_rule_error
+    category: llm_error | api_error | tool_error | validation_error | permission_error | business_rule_error
     message: string
     gap_analysis: string             # what goal criteria were not met
 ```
@@ -281,10 +281,14 @@ a2a:
     static_agents:                    # used when mode=static
       - agent_id: rag_faq
         endpoint: "http://localhost:8001"
+        health_check_path: "/health"   # GET endpoint, must return 200
       - agent_id: claims_processor
         endpoint: "http://localhost:8002"
+        health_check_path: "/health"
       - agent_id: property_verification
         endpoint: "http://localhost:8003"
+        health_check_path: "/health"
+    health_check_interval_sec: 10      # how often to probe agent health
 ```
 
 | Mode | Use Case | Trade-off |

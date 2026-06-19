@@ -626,6 +626,32 @@ observability:
     - avg_turns_per_conversation
 ```
 
+### 9.4 Conversation Turn Limits
+
+The framework enforces per-conversation turn limits to prevent abuse and bound cost:
+
+```yaml
+conversation_limits:
+  enabled: true                       # flag: turn off for testing (false = limits disabled)
+  max_turns_per_conversation: 50      # total turns before forced termination
+  max_unrecognized_turns: 5           # consecutive or total unrecognized intents
+  max_chitchat_turns: 10              # non-business intents (greetings, small talk)
+  daily_conversation_limit: 100       # max new conversations per user per day
+```
+
+When `enabled: false`, all limits are bypassed — used for testing and evaluation. When enabled:
+
+| Limit | Exhausted Behavior |
+|-------|-------------------|
+| `max_turns_per_conversation` | Terminate conversation with summary message |
+| `max_unrecognized_turns` | Route to `errorNode` with `escalate_to_human` |
+| `max_chitchat_turns` | Decline further chitchat, redirect to business intents |
+| `daily_conversation_limit` | Reject new conversation creation for that user |
+
+Non-business intents (`greeting`, `small_talk`, `out_of_scope`) each consume a chitchat turn. Business intents (`get_quote`, `file_claim`, `provide_information`) do not count toward chitchat limit. Unrecognized intents (`unrecognized_intent`) count only toward the unrecognized limit.
+
+These limits integrate with the [Rate Limiting spec](./2026-06-17-rate-limiting.md) for per-user/per-intent rate enforcement.
+
 ---
 
 ## 10. Open Questions

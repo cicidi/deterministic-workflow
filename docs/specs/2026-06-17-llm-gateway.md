@@ -56,8 +56,8 @@ LLMCall {
 
 ```
 LLMResult {
-  data:       dict              // validated JSON matching output_schema
-  raw:        string            // raw LLM response (for audit trail)
+  data:       dict              // validated JSON matching output_schema (PII-scrubbed per Response Generation §8)
+  raw:        string            // raw LLM response (audit trail only — access-controlled, see below)
   model:      string            // which model was used
   usage:      TokenUsage        // tokens in / out
   attempts:   int               // how many attempts (1 if first try passed)
@@ -65,6 +65,8 @@ LLMResult {
   coercions?: CoercionRecord[]  // type coercion audit entries (see §3.2)
 }
 ```
+
+The `raw` field is exempt from PII scrubbing (it preserves the original response for debugging/audit). Access to `raw` is restricted to audit trails and debug endpoints with access control. See [Response Generation §8](./2026-06-17-response-generation-layer-design.md) for PII scrubbing on `data`.
 
 ### 2.3 TokenUsage
 
@@ -152,6 +154,26 @@ Retry budget per LLM call:
   // each tier has its own failures_before_escalation (default 2)
   // total budget = Σ(tier.failures_before_escalation)   (see §4.4)
 ```
+
+Per-error-type overrides allow different retry behavior based on the failure category. Non-retryable errors (auth failure, content policy violation) skip retries entirely and route directly to errorNode:
+
+```yaml
+retry_policy:
+  default: { max_attempts: 3, backoff: exponential, base_delay_ms: 500 }
+  overrides:
+    AuthenticationError:         { max_attempts: 0 }              # 401 — never retry
+    RateLimitError:              { max_attempts: 5, base_delay_ms: 2000 }
+    ContentPolicyViolationError: { max_attempts: 1 }
+    ContextWindowExceededError:  { max_attempts: 0 }              # prompt too large — retry won't help
+```
+
+| Error Type | Default Max Attempts | Rationale |
+|------------|---------------------|-----------|
+| Schema violation / JSON parse | 3 | LLM can self-correct |
+| Timeout / 5xx | 3 | Transient, worth retrying |
+| Rate limit (429) | 5 | Wait longer, retries often succeed |
+| Auth failure (401/403) | 0 | Key is invalid — retry wastes budget |
+| Content policy violation | 1 | One rephrase attempt, then errorNode |
 
 Each retry injects the validation error into the prompt so the LLM can self-correct. The error is appended in a **structured format** to prevent the LLM from misinterpreting the correction instruction:
 
@@ -263,9 +285,34 @@ The gateway validates that the JSON structure matches; it does NOT validate the 
 
 Layer 3 nodes operate with `temperature: 0.3` (per VISION.md §6.3) and may use `on_violation: warn_and_accept` for their `output_schema` to avoid retry loops on free-text fields where schema shape is not critical.
 
+### 3.7 LLM Call Caching
+
+Identical LLM calls (same prompt + output_schema + model + temperature) can be cached to reduce cost and latency. Caching is per-environment:
+
+| Environment | Cache Backend | TTL | Purpose |
+|-------------|--------------|-----|---------|
+| dev | In-memory dict | Session | Fast iteration without API cost |
+| e2e | In-memory or local Redis | Test run | Deterministic eval results |
+| prod | Redis (distributed) | Configurable | Reduce cost on repeated calls |
+
+Cache key: `hash(prompt + output_schema + model + temperature)`. Cache hits are recorded in the audit trail as `cache_hit: true` with zero token usage.
+
+```yaml
+llm:
+  caching:
+    enabled: true
+    backend: redis              # memory | redis
+    ttl_seconds: 3600           # 1 hour default
+    per_node_override: true     # allow nodes to disable caching
+```
+
+Interaction with model escalation: a cache hit on Tier 0 returns immediately — no escalation needed. If Tier 0 cache misses and the call fails, Tiers 1+ can benefit from prompt caching (Anthropic/OpenAI server-side) for the system prompt prefix.
+
 ## 4. Progressive Model Escalation
 
-The gateway supports **automatic model escalation**: when an LLM call fails repeatedly, the framework upgrades to a more capable (and more expensive) model. This balances cost-efficiency (small model by default) with reliability (large model as fallback).
+The gateway supports **automatic model escalation**: when an LLM call fails repeatedly, the framework upgrades to a more capable (and more expensive) model as a safety net. The framework's default is always the cheapest viable model — escalation is a fallback, not a feature.
+
+**Cost guard:** The framework's design philosophy is to optimize for small, inexpensive models. Tier 0 (small model) should handle the vast majority of calls. Escalation to larger models is reserved for edge cases where the small model consistently fails. This keeps per-call costs predictable and bounded.
 
 ### 4.1 Model Tiers
 
@@ -319,6 +366,23 @@ Attempt 5 ──→ Tier 2 (large model: gpt-4.1) ──→ SUCCESS ✅
 At each tier, the gateway retries up to `failures_before_escalation` times (default: 2). After 2 failures on the current tier, the gateway attempts **deterministic fallback** before escalating to the next tier. When all tiers are exhausted, the gateway routes to `errorNode`.
 
 **Circuit breaker:** If ALL tiers across ALL providers are exhausted via `provider_error` (timeout, 5xx) — indicating a total provider outage — the gateway enters circuit-open state for `circuit_breaker_ttl_seconds` (default: 30). During this window, all LLM calls immediately route to `errorNode` with `escalate_to_human` strategy, avoiding wasted timeouts on known-unavailable providers.
+
+**Prompt strategy on escalation:** Each tier escalation chooses how to present the prompt context to the next tier's LLM:
+
+| Strategy | Behavior | Cost |
+|----------|----------|------|
+| `carry_forward` | Append all error injections to the previous prompt | Highest token accumulation |
+| `reset` | Fresh prompt per tier, no error history | Lowest tokens, no correction context |
+| `summarize` (default) | Inject a one-line failure summary: "Previous tier failed after 2 attempts (missing field 'confidence'). Ensure all required fields are present." | Minimal token overhead, retains correction context |
+
+```yaml
+llm:
+  model_escalation:
+    prompt_strategy: summarize          # carry_forward | reset | summarize
+    max_prompt_length: 8192             # force reset if accumulated prompt exceeds this
+```
+
+`summarize` is the default — it gives the next tier enough context to avoid repeating the same mistake without ballooning token costs.
 
 Deterministic fallback is tier-level (once per tier, after LLM retries exhausted) and can be disabled per-node. Fallback applies to extraction nodes (keyword/regex) and decision nodes (enum-value substring matching); for response nodes it is typically disabled since free-text cannot be salvaged deterministically.
 
@@ -445,6 +509,8 @@ Each escalation is recorded in the audit log. Example (Tier 0 exhausted, Tier 1 
 }
 ```
 
+The errorNode audit (§8) extends this structure. This section covers escalation-specific fields; §8 adds error classification, coercion details, and raw response capture.
+
 ### 4.6 Model Escalation Strategies
 
 #### Option A: Fixed Tiers (Default)
@@ -489,39 +555,17 @@ llm:
 | Weaknesses | Multi-provider API key management, different cost structures |
 | Best for | Production with strict SLA, multi-cloud deployments |
 
-#### Option C: Dynamic Routing
-
-Runtime evaluation selects the next model based on current cost, latency, and availability. A lightweight policy engine ranks candidate models per attempt.
-
-```yaml
-llm:
-  model_escalation:
-    strategy: dynamic
-    ranking_policy:
-      weights:
-        cost: 0.4
-        latency: 0.2
-        accuracy: 0.4
-      candidates: [gpt-4o-mini, gpt-4o, gpt-4.1, claude-sonnet, claude-opus]
-    failures_before_escalation: 2
-```
-
-| Strengths | Optimal cost/latency/accuracy balance, adapts to provider health |
-|-----------|-----------------------------------------------------------------|
-| Weaknesses | Complex implementation, harder to predict behavior, more audit complexity |
-| Best for | Cost-optimized large-scale deployments |
-
 ### 4.7 Comparison Matrix
 
-| Dimension | Option A (Fixed Tiers) | Option B (Provider-Cascade) | Option C (Dynamic) |
-|-----------|----------------------|---------------------------|-------------------|
-| Config complexity | Low | Medium | High |
-| Provider redundancy | None | Full (multi-provider) | Full (multi-provider) |
-| Cost predictability | High | Medium | Low |
-| Latency overhead | None | None | +policy evaluation |
-| Audit simplicity | High | Medium | Low |
-| SLA resilience | Medium (single provider) | High | High |
-| Implementation effort | Low | Medium | High |
+| Dimension | Option A (Fixed Tiers) | Option B (Provider-Cascade) |
+|-----------|----------------------|---------------------------|
+| Config complexity | Low | Medium |
+| Provider redundancy | None | Full (multi-provider) |
+| Cost predictability | High | Medium |
+| Latency overhead | None | None |
+| Audit simplicity | High | Medium |
+| SLA resilience | Medium (single provider) | High |
+| Implementation effort | Low | Medium |
 
 ### 4.8 Environment-Specific Defaults
 
@@ -570,6 +614,33 @@ When the TTL expires, the next call starts from Tier 0 again — allowing the fr
 }
 ```
 
+### 4.10 Pre-Call Checks
+
+Before issuing any LLM call, the gateway runs pre-call checks to avoid calls that are guaranteed to fail. This reduces unnecessary retries and escalation.
+
+| Check | What | Failure Action |
+|-------|------|---------------|
+| **Context window** | `estimated_prompt_tokens + max_tokens ≤ model.context_window` | Skip this tier, escalate immediately |
+| **Rate limit** | Per-provider RPM/TPM quota remaining ≥ 1 | Skip this provider, try next tier provider |
+| **Deployment health** | Model deployment not in cooldown (N failures/minute exceeded) | Skip this deployment, try next tier |
+| **Region filter** | Model deployment in allowed region (GDPR/data residency) | Skip this deployment |
+| **Auth validity** | API key valid and not expired | Skip this provider, escalate to errorNode |
+
+Pre-call checks run before each tier attempt and are complementary to the reactive escalation flow (§4.2). A tier skipped by pre-call checks counts as a tier exhaustion (no attempt wasted).
+
+```yaml
+llm:
+  pre_call_checks:
+    enabled: true
+    context_window_margin: 200            # reserve tokens for response variance
+    rate_limit_buffer: 10                 # stop calling when quota < 10 requests
+    cooldown_threshold: 5                 # after 5 failures/minute → cooldown 60s
+    cooldown_duration_seconds: 60
+    region_filter: [us-east, eu-west]     # optional, empty = no filter
+```
+
+**Circuit breaker integration:** Pre-call checks also enforce the circuit-open state (§4.2). If all providers are in cooldown or circuit-open, every LLM call routes directly to `errorNode` without any attempt.
+
 ## 5. Gateway Validation Strategies
 
 ### Option A: Provider-Native Structured Output
@@ -605,15 +676,49 @@ llm:
     - deepseek
 ```
 
+### Option D: Validator-Enhanced Post-Process
+
+Post-process validation + field-level content quality checks (Instructor + Guardrails pattern). Beyond JSON schema validation, each field can carry content rules: regex patterns, length bounds, semantic checks, email/phone format.
+
+```
+Schema: { email: string, phone: string, building_age: integer }
+LLM output: { "email": "call me", "phone": "N/A", "building_age": 999 }
+
+→ JSON parse ✓, schema match ✓, type coercion ✓
+→ email: pattern /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/ → FAIL ("call me" is not an email)
+→ phone: min_length=10 → FAIL ("N/A" is 3 chars)
+→ building_age: 0 <= 999 <= 200 → FAIL (out of range)
+
+→ Retry with validation context injected per field
+→ Reask: "email must be valid email address; phone must be at least 10 digits; building_age must be 0-200 years"
+```
+
+Content validators:
+
+| Validator | What | Example |
+|-----------|------|---------|
+| `pattern` | Regex match | email, phone, postal code format |
+| `min_length` / `max_length` | String length bounds | name ≥ 2 chars, phone ≥ 10 digits |
+| `ge` / `le` | Numeric range | `0 <= age <= 200` |
+| `ValidChoices` | Value in allowed set | `coverage_type in [basic, standard, premium]` |
+| `TwoWords` | At least 2 words | Free-text response must contain substantive content |
+| `MinLength` | Min char count | Response text ≥ 50 chars |
+
+| Strengths | Catches "correct shape, wrong content" failures; field-level reask context improves correction rate |
+|-----------|-------------------------------------------------------------------------------------------|
+| Weaknesses | More complex schema authoring; content validators are hand-authored, not auto-generated |
+| Best for | Production extraction nodes where correctness matters more than latency |
+
 ### 5.4 Comparison Matrix
 
-| Dimension | Option A (Native) | Option B (Post-Process) | Option C (Hybrid) |
-|-----------|-------------------|------------------------|-------------------|
-| Provider support | Limited (OpenAI, Anthropic) | Any provider | Any, with optimization |
-| Retry frequency | Low | Medium-High | Low |
-| Schema complexity limit | Provider-dependent | Unlimited | Best available |
-| Latency | 1 call typically | 1-4 calls | 1 call typically |
-| Implementation | Leverage provider SDK | Pure JSON Schema validation | Both |
+| Dimension | Option A (Native) | Option B (Post-Process) | Option C (Hybrid) | Option D (Validator-Enhanced) |
+|-----------|-------------------|------------------------|-------------------|------------------------------|
+| Provider support | Limited (OpenAI, Anthropic) | Any provider | Any, with optimization | Any provider |
+| Retry frequency | Low | Medium-High | Low | Medium |
+| Schema complexity limit | Provider-dependent | Unlimited | Best available | Unlimited |
+| Content validation | Type only | Type only | Type only | Type + semantic + format |
+| Latency | 1 call typically | 1-4 calls | 1 call typically | 1-3 calls |
+| Implementation | Provider SDK | JSON Schema validation | Both | Pydantic + validators |
 
 ## 6. Schema Definition
 
@@ -663,6 +768,49 @@ output_schema:
     type: string
     required: false
 ```
+
+### 6.3 Python-Native Schema (Pydantic)
+
+For Python developers, schemas can also be defined as Pydantic `BaseModel` classes — the approach used by Instructor and LangChain. The gateway auto-converts Pydantic models to JSON Schema internally.
+
+```python
+from pydantic import BaseModel, Field
+
+class IntentResult(BaseModel):
+    intent: str = Field(description="The classified intent label")
+    confidence: float = Field(ge=0, le=1, description="Confidence score (0-1)")
+    reasoning: str | None = Field(default=None, description="LLM reasoning")
+
+# Usage: gateway.call(prompt="...", output_schema=IntentResult)
+```
+
+Pydantic models offer Python-level type checking, built-in validators (`Field(ge=0, le=1)`), and IDE autocompletion — advantages over raw JSON Schema for code-first workflows. The gateway treats a Pydantic model identically to a JSON Schema dict: same validation pipeline, same retry/enforcement, same audit trail.
+
+| Format | Best For |
+|--------|----------|
+| JSON Schema (§6.1) | Language-agnostic config, OpenAPI integration |
+| YAML (§6.2) | Workflow authors, declarative config |
+| Pydantic (§6.3) | Python developers, code-first workflows, IDE support |
+
+### 6.4 Schema Preprocessing ($ref/$defs Resolution)
+
+LLM providers have different JSON Schema support. OpenAI Structured Outputs does not support `$ref` or `$defs` — all references must be inlined. Anthropic similarly requires flat schemas. The gateway preprocesses schemas before sending to the provider:
+
+1. **Dereference**: Resolve all `$ref` pointers, inline `$defs` entries recursively
+2. **Depth check**: Validate nesting depth ≤ provider limit (OpenAI: 5, Anthropic: varies)
+3. **Property count**: Count total properties ≤ provider limit (OpenAI: 100)
+4. **Strip unsupported**: Remove `$comment`, `examples`, `default` (OpenAI), `oneOf`/`anyOf` (Anthropic limited support)
+
+```yaml
+llm:
+  schema_preprocessing:
+    auto_dereference: true
+    max_nesting_depth: 5
+    max_total_properties: 100
+    on_exceed_limit: warn_and_flatten    # warn_and_flatten | error
+```
+
+If a schema exceeds provider limits after preprocessing, the gateway emits a warning and either flattens further (e.g., splitting nested objects) or rejects the call with a clear error message — no silent truncation.
 
 ## 7. Usage in Each Layer
 
@@ -764,22 +912,44 @@ errorNode ──→ strategy: retry_with_context | escalate_to_human | terminate
     schema_violation: true,
     total_attempts: 5,            // Σ(tier.failures_before_escalation) = 2+2+1 = 5 for non-LLM
     tiers_exhausted: 3,
-    last_tier: "gpt-4.1",
-    last_error: "missing field 'intent'"
+    last_tier: { "provider": "openai", "model": "gpt-4.1" },
+    last_error: "missing field 'intent'",
+    error_category: "SCHEMA_MISMATCH",
+    cost: {
+      "tier_0_tokens": { "prompt": 1800, "completion": 300 },
+      "tier_0_attempts": 2,
+      "tier_1_tokens": { "prompt": 1200, "completion": 250 },
+      "tier_1_attempts": 2,
+      "tier_2_tokens": { "prompt": 900, "completion": 0 },
+      "tier_2_attempts": 1,
+      "total_tokens": { "prompt": 3900, "completion": 550 }
+    },
+    coercions: [],
+    confidence_threshold: { "enabled": false },
+    raw_response_snippet: "{\"intent\": ... (truncated)"
   }
 ```
 
 The gateway records every failed attempt, including the schema violation details, in the audit trail.
+
+**Error classification:** The `error_category` field uses a structured enum for downstream error handling:
+
+```
+error_category: JSON_PARSE_ERROR | SCHEMA_MISMATCH | TYPE_COERCION_FAILURE | 
+                CONFIDENCE_BELOW_THRESHOLD | PROVIDER_TIMEOUT | PROVIDER_5XX |
+                RATE_LIMITED | AUTH_FAILURE | CONTENT_POLICY_VIOLATION |
+                CIRCUIT_OPEN | DETERMINISTIC_FALLBACK_FAILED
+```
 
 ## 9. Open Questions
 
 | # | Question | Impact |
 |---|----------|--------|
 | 1 | Should the gateway support streaming (incremental schema validation as tokens arrive) or only full-response validation? | Latency for long responses |
-| 2 | Should the gateway cache identical LLM calls (same prompt + schema + model) to reduce cost during development? | Cost, determinism in dev |
-| 3 | How should `$ref` and `$defs` in complex JSON Schema be handled across different LLM providers with different schema capabilities? | Schema complexity support |
+| 2 | Resolved — see §3.7. | Cost, determinism in dev |
+| 3 | Resolved — see §6.4. | Schema complexity support |
 | 4 | Should the gateway emit detailed schema violation traces to LangSmith/LangFuse for prompt improvement? | Debugability |
-| 5 | Should escalation reset the prompt context (fresh system prompt per tier) or carry forward the error-enriched prompt from the previous tier? | Prompt token accumulation, cost |
+| 5 | Resolved — see §4.2 prompt strategies. | Prompt token accumulation, cost |
 | 6 | Should escalation be configurable per-node (e.g., risk assessment escalates faster than data extraction)? | Granularity vs configuration complexity |
 | 7 | How should cross-provider escalation handle provider-specific system prompts and schema directives (e.g., OpenAI `response_format` vs Anthropic tool use)? | Provider-compatibility overhead |
 

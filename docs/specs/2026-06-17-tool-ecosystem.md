@@ -555,12 +555,12 @@ This ensures deterministic behavior: every tool failure has a defined recovery p
 
 #### 7.5.1 Concept
 
-Any node can call another agent as a tool — not just at the executor level (`a2a_invoke`), but as a tool in the node's `tool_allowlist`. This means an LLM node or code executor node can invoke another agent to delegate a sub-task, get a JSON result back, and continue its own logic.
+Any node can call another agent as a tool — not just at the executor level (`a2a_invoke`), but as a tool in the node's `allowed_tools` list. This means an LLM node or code executor node can invoke another agent to delegate a sub-task, get a JSON result back, and continue its own logic.
 
 ```
 Node (e.g., LLM node deciding what to do)
     │
-    ├── tool_allowlist: [lookup_property_record, delegate_faq_to_agent, ...]
+    ├── allowed_tools: [lookup_property_record, delegate_faq_to_agent, ...]
     │
     ├── Node decides: "I need to answer a FAQ question"
     │
