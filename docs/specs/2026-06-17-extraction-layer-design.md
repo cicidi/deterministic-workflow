@@ -261,7 +261,7 @@ The Extract node receives the `ClassifiedIntent[]` from the classifier and produ
 
 ### 3.2 Implementation Options
 
-#### Option A: LLM-Primary — Structured Output (zelkim pattern)
+#### Option A: LLM with Structured Output (Recommended)
 
 Use LLM with structured output (JSON mode / function calling) to extract all fields at once. Relies on the LLM's natural language understanding to handle varied phrasings, multi-turn context, and implicit references.
 
@@ -279,42 +279,6 @@ Use LLM with structured output (JSON mode / function calling) to extract all fie
 - Output format: JSON with field_name → value, plus `reasoning`
 - Temperature: 0
 - **Guardrail**: All LLM-based extraction output is JSON. The framework enforces output validation guardrails (schema check, field presence, type coercion) before the result enters the extraction pipeline.
-
-#### Option B: Keyword/Regex — Deterministic-Only (no LLM)
-
-Extract entities using only deterministic pattern matching. No LLM call. Each field has a `fallback_pattern` (regex) or `fallback_keywords` (string list).
-
-| Aspect | Detail |
-|--------|--------|
-| Strengths | Zero LLM cost; deterministic; fast; auditable |
-| Weaknesses | Brittle on rephrasing; can't handle implicit references |
-| Best for | Structured fields (postal code, phone, account ID); compliance-critical use cases |
-| Dependencies | None (pure Python `re`) |
-| Fallback | If no regex matches → field remains null |
-
-#### Option C: Hybrid — LLM-First + Deterministic Fallback (Prodigal pattern)
-
-LLM extracts first. Then for each field with a `fallback_pattern` or `fallback_keywords`, run deterministic extraction and merge results.
-
-| Aspect | Detail |
-|--------|--------|
-| Strengths | Best of both: LLM handles ambiguity, regex guarantees precision on structured fields |
-| Weaknesses | LLM cost; merge conflict resolution complexity |
-| Best for | Regulated industries with mixed field types |
-| Dependencies | LLM provider + rule engine |
-| Conflict resolution | Configurable per field: `llm_wins` / `regex_wins` / `llm_unless_confidence_below` |
-
-**Merge strategy (configurable per node):**
-
-```
-1. Try LLM extraction → entities_llm
-2. For each field with deterministic fallback:
-     run regex/keyword → entities_regex
-3. Merge:
-     complement:      entities_llm[field] ?? entities_regex[field]
-     llm_wins:        entities_llm[field]   (ignore regex)
-     regex_wins:      entities_regex[field] (ignore LLM)
-```
 
 ### 3.3 State-Aware Prompting
 
@@ -541,71 +505,6 @@ Compile declarative YAML rules into a rule engine's native format. Execute as a 
 | Best for | Complex validation with field interdependencies |
 | Configuration | `rule_engine: durable_rules` in node metadata |
 
-#### Option B: Pure Python Predicate Functions
-
-Each rule type maps to a simple function. No external rule engine dependency. Rules are declared in YAML and evaluated by the framework's native predicate engine:
-
-```yaml
-# Native predicate rule definitions (engine evaluates per-field against these rules)
-validation_rules:
-  required:
-    predicate: "value is non-null and non-empty"
-  type:
-    predicate: "Type match (int/float/string/date/boolean/enum)"
-  enum:
-    predicate: "value is one of the listed options"
-  range:
-    predicate: "value is within numeric range (min <= value <= max)"
-  regex:
-    predicate: "value matches the given regex pattern"
-  length:
-    predicate: "string length is within bounds (min <= length <= max)"
-  custom:
-    predicate: "user-provided validation function passes"
-```
-
-| Aspect | Detail |
-|--------|--------|
-| Strengths | Zero dependencies; simple; debuggable |
-| Weaknesses | No cross-field rules; no inference; limited composability |
-| Best for | Simple per-field checks; minimal deployments |
-| Configuration | `rule_engine: native` in node metadata |
-
-#### Option C: Schema Validator — Pydantic / dataclass
-
-Define entities as structured schemas with built-in validators. The framework maps YAML declarations to type-safe validation models at runtime:
-
-```yaml
-# Schema declaration (maps to type-safe validator at runtime)
-# The framework generates validation logic from this declaration.
-schema:
-  PropertyInfo:
-    fields:
-      property_type:
-        type: enum
-        allowed: [apartment, house, villa]
-      address:
-        type: string
-        min_length: 5
-      postal_code:
-        type: string
-        pattern: "^[0-9]{6}$"
-      building_age:
-        type: int
-        range: { min: 0, max: 200 }
-      floor_area:
-        type: float
-        range: { min: 1, max: 100000 }
-        required: false
-```
-
-| Aspect | Detail |
-|--------|--------|
-| Strengths | Type-safe; IDE support; serialization built-in |
-| Weaknesses | Schema is code (not YAML); cross-field validators are verbose; dynamic schemas harder |
-| Best for | Python-native projects with known schemas at dev time |
-| Configuration | `rule_engine: pydantic` in node metadata |
-
 ### 4.4 Comparison Matrix
 
 | Dimension | Option A (Rule Engine) | Option B (Predicate) | Option C (Pydantic) |
@@ -661,51 +560,6 @@ Transform rules execute as an ordered pipeline per field. Purely deterministic (
 | Weaknesses | Cannot handle ambiguous or implicit data |
 | Best for | Type coercion, normalization, lookup tables |
 | Dependencies | None (or external API for `external` operations) |
-
-#### Option B: LLM-Assisted Transform
-
-Transform uses LLM for `llm_correct` and `llm_complete` operations. Temperature = 0.
-
-- **`llm_correct`**: The raw value is close but invalid (e.g., "Nisaan" → "Nissan"). The LLM receives the raw value + validation error + expected format.
-- **`llm_complete`**: A field is null but inferrable from other fields + conversation context (e.g., street + city → postal code).
-
-| Aspect | Detail |
-|--------|--------|
-| Strengths | Handles near-miss errors; can infer implicit data |
-| Weaknesses | LLM cost/latency; non-deterministic |
-| Best for | Free-text corrections, intelligent completion |
-| Dependencies | LLM provider |
-
-#### Option C: Hybrid — Rules Pipeline + LLM Fallback
-
-Deterministic rules execute first. If they fail (unrecoverable), invoke LLM as a last resort.
-
-Execution order:
-
-```
-1. cast → normalize → parse → lookup → default → external
-2. If still invalid → llm_correct
-3. If still null and required → llm_complete
-```
-
-| Aspect | Detail |
-|--------|--------|
-| Strengths | Combines determinism with LLM flexibility; LLM only invoked when needed |
-| Weaknesses | More complex pipeline; LLM still has latency |
-| Best for | Most production use cases |
-| Dependencies | Rule engine + LLM provider |
-
-### 5.4 Comparison Matrix
-
-| Dimension | Option A (Deterministic) | Option B (LLM-Assisted) | Option C (Hybrid) |
-|-----------|------------------------|------------------------|-------------------|
-| Cost | $ | $$$ | $$ |
-| Latency | <10ms | ~1-3s (LLM calls) | <10ms typical, ~1-3s fallback |
-| Determinism | High | Low | Medium |
-| Handling near-misses | Limited | Good | Good |
-| Handling missing data | Default only | Inference | Default → inference |
-| Complexity | Low | Low | Medium |
-| Auditability | Full | Partial | Partial |
 
 ---
 
