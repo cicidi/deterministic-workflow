@@ -1,6 +1,6 @@
 # Three-Tier Agent Testing Methodology
 
-**Version:** 0.2.1
+**Version:** 0.2.2
 **Scope:** Testing strategy for agents built on the three-layer deterministic workflow framework. Industry-agnostic. Applies to any domain (fintech, healthcare, legal, government).
 
 ---
@@ -419,6 +419,30 @@ Every agent turn must include a `LayerTrace` that separates LLM work from determ
 [L3:CODE] type=deterministic, template=
 ```
 
+**LayerTrace data class definition:**
+
+```python
+@dataclass
+class LayerTrace:
+    """Deterministic workflow layer trace for test visibility."""
+    layer1_intent: str = ""              # LLM: classified intent
+    layer1_confidence: float = 0.0       # LLM: confidence score
+    layer1_entities: dict = field(default_factory=dict)  # LLM: extracted entities
+    layer2_phase_before: str = ""        # Code: phase before routing
+    layer2_phase_after: str = ""         # Code: phase after routing
+    layer2_decision: str = ""            # Code: routing decision made
+    layer2_validation: str = ""          # Code: validation result
+    layer3_response_type: str = "deterministic"  # Code: "deterministic" | "template"
+    layer3_template: str = ""            # Code: template name used
+
+    def to_log(self) -> str:
+        return (f"[L1:LLM] intent={self.layer1_intent}, conf={self.layer1_confidence:.2f}, "
+                f"entities={self.layer1_entities}\n"
+                f"[L2:CODE] phase: {self.layer2_phase_before} → {self.layer2_phase_after}, "
+                f"decision={self.layer2_decision}, validation={self.layer2_validation}\n"
+                f"[L3:CODE] type={self.layer3_response_type}, template={self.layer3_template}")
+```
+
 This enables:
 - Tier 2: verify the LLM classified correctly
 - Tier 3: detect when the LLM and code disagree (LLM extracted entity X but code rejected it)
@@ -447,7 +471,46 @@ For each mocked API, track a GitHub issue for the real integration. The mock int
 
 Tier 1 is the gatekeeper. No code merges if Tier 1 fails. Tier 2 and Tier 3 are quality monitors — their results inform but don't block.
 
-## 10. Test File Structure
+## 10. LLM Gateway Resilience Testing
+
+Gateway retry behavior is a distinct concern from agent logic. The agent delegates LLM calls to a Gateway; the Gateway handles network failures, rate limits, and malformed responses. This should be tested separately.
+
+**What to test:**
+
+| Scenario | Expected Behavior | Tier |
+|----------|------------------|------|
+| LLM API returns 401 (bad key) | Gateway retries up to N, then raises RuntimeError. Agent catches and routes to errorNode. | Tier 1 |
+| LLM API returns 429 (rate limit) | Gateway backs off exponentially. Retries succeed on attempt 2-3. | Tier 1 |
+| LLM returns malformed JSON | Gateway retries. After N failures, raises RuntimeError. | Tier 1 |
+| LLM times out | Gateway retries. After N timeouts, raises RuntimeError. | Tier 1 |
+| LLM succeeds on retry 2 | Gateway returns result. Agent continues normally. | Tier 1 |
+
+**Mock LLM Gateway for retry testing:**
+
+```python
+class FlakyMockGateway:
+    """Simulates LLM API failures for retry testing."""
+    def __init__(self, fail_count: int = 2, max_retries: int = 3):
+        self.call_count = 0
+        self.fail_count = fail_count
+        self.max_retries = max_retries
+
+    def call(self, prompt, output_schema, temperature=0):
+        self.call_count += 1
+        if self.call_count <= self.fail_count:
+            raise ConnectionError("simulated network failure")
+        return output_schema(intent="greet", confidence=1.0)
+```
+
+**Gateway config per environment:**
+
+| Env | Model | Retries | Timeout |
+|-----|-------|---------|---------|
+| Dev | cheap model | 1 | 5s |
+| E2E | prod model | 2 | 10s |
+| Prod | prod model | 3 | 15s |
+
+## 11. Test File Structure
 
 ```
 tests/
@@ -475,7 +538,7 @@ tests/
 └── sim_client.py             # SimClient for Tier 3 (shared across personas)
 ```
 
-## 11. Per-Tier Scenario Allocation
+## 12. Per-Tier Scenario Allocation
 
 | Tier | MVP Count | Expanded Count | What to Test |
 |------|-----------|----------------|--------------|
@@ -487,7 +550,7 @@ Tier 1 scenarios are about **code path coverage** — they don't need LLM, so th
 
 **Single-user-type adaptation:** If your agent has only 1 user type, allocate all scenarios to that type, varying the workflow dimension instead of the user-type dimension. If you have 3+ user types, split the catalog proportionally. The Type A / Type B structure in Section 6.1 is illustrative, not prescriptive.
 
-## 12. Multi-Turn State Assertions
+## 13. Multi-Turn State Assertions
 
 Conversation state accumulates across turns. Tests must verify state persistence:
 
@@ -515,7 +578,7 @@ assert state.quote["interest_rate"] > 0
 - After completion, are `lead_id`, `quote`, and `borrower_id` all set?
 - Does `current_lead_id` track the correct lead after switching?
 
-## 13. API Mock Code Templates
+## 14. API Mock Code Templates
 
 Mock external APIs with classes that implement the same interface but no network calls:
 
@@ -549,7 +612,7 @@ class MockBalanceLedger:
 
 **Injection strategy:** Use dependency injection — the agent accepts an optional `sms_client` or `balance_ledger` parameter that defaults to the real API client in production but receives the mock in tests. Avoid monkey-patching globals.
 
-## 14. Definition of Done
+## 15. Definition of Done
 
 Testing is complete when ALL of the following are satisfied:
 
@@ -565,7 +628,7 @@ Testing is complete when ALL of the following are satisfied:
 - [ ] One Tier 2 edge-case script exists per edge case class (correction, diversion, vague)
 - [ ] Every mock API has a corresponding GitHub issue for real integration
 
-## 10. Sources
+## 16. Sources
 
 - Tier 1 design: confidence high — 65 passing mock tests in mfangdai-agent demonstrate the pattern
 - Tier 2 design: confidence high — LLM accuracy measurement is a standard NLP evaluation pattern
