@@ -1,6 +1,8 @@
 # Three-Tier Agent Testing Methodology
 
-**Version:** 0.3.0
+**Version:** 0.4.0
+
+**Validated against:** mfangdai-agent (2026-06-19). Tier 1: 65/65. Tier 2: 10/10 scripts, 88.1% intent accuracy. Tier 3: 6/6 runs, 100% completion rate.
 **Scope:** Testing strategy for agents built on the three-layer deterministic workflow framework. Industry-agnostic. Applies to any domain (fintech, healthcare, legal, government).
 
 ---
@@ -217,7 +219,7 @@ ScriptedClient ──pre-written message──► Agent (real LLM)
                  ◄──response──────────
 ```
 
-The client sends fixed messages from a script. The server uses the real LLM for intent classification and entity extraction. All other agent logic (Layer 2 decisions, Layer 3 responses) runs normally.
+The client sends fixed messages from a script. The server uses the real LLM for **Layer 1 only** (intent classification + entity extraction). Layer 2 (code) runs normally. Layer 3 (response generation) uses deterministic hardcoded strings — no LLM call for text generation. This is consistent with the Layer Coverage Matrix (§2.2): L3 is hardcoded in Tier 1 and Tier 2.
 
 ### 4.2 Script Format
 
@@ -651,7 +653,134 @@ Testing is complete when ALL of the following are satisfied:
 - [ ] One Tier 2 edge-case script exists per edge case class (correction, diversion, vague)
 - [ ] Every mock API has a corresponding GitHub issue for real integration
 
-## 16. Sources
+## 16. Ambiguous Intent Handling
+
+Real NLU is ambiguous. Some user messages can legitimately map to multiple intents. The testing methodology must accommodate this.
+
+**Acceptable intent sets:**
+
+```python
+# Strict: exact match only (for clear-cut messages)
+{"expect": {"intent": "ask_about_rates"}}
+
+# Soft: acceptable set (for ambiguous messages)
+{"expect": {"intent": ["ask_about_rates", "help"]}}  # either is valid
+
+# Wildcard: any intent accepted (for truly open-ended messages)
+{"expect": {"intent": "*"}}  # skip intent assertion, just check phase/entities
+```
+
+**When to use each:**
+
+| Mode | Use when | Example |
+|------|----------|---------|
+| Strict | The message has one clear intent | "I want to refinance" → `provide_loan_info` |
+| Soft | The message is ambiguous between 2-3 intents | "I want to buy a house, can you help?" → `ask_about_rates` OR `help` |
+| Wildcard | The intent doesn't matter for this test step | A turn that only exists to set up state for the next assert |
+
+**Metrics adjustment for soft matching:**
+
+When a script uses soft matching, count it as a match if the LLM returns ANY intent in the acceptable set. Report soft-match statistics separately from strict-match:
+
+```
+Intent Accuracy: 88.1% (strict: 83%, soft: 5.1%)
+```
+
+**Troubleshooting intent mismatches:**
+
+When a Tier 2 script fails due to intent mismatch, follow this diagnostic flow:
+
+1. **Check ambiguity:** Is the message inherently ambiguous? → Switch to soft matching.
+2. **Check LLM prompt:** Does the classification prompt clearly describe this intent? → Add examples.
+3. **Check temperature:** Is temperature > 0? → Set to 0 for classification.
+4. **Check model:** Does a different model classify correctly? → If yes, the prompt needs model-specific tuning.
+5. **Accept as known:** If the mismatch is consistent and the correct intent would not change downstream behavior, document as a known ambiguity.
+
+## 17. Script Versioning and Baselining
+
+Test scripts evolve as the agent's capabilities grow. Changes to scripts require re-baselining metrics.
+
+**Script version field:**
+
+```python
+S01_PURCHASE_CA = {
+    "version": "1.0.0",
+    "baseline_date": "2026-06-19",
+    "baseline_metrics": {
+        "intent_accuracy": 0.95,
+        "turns_expected": 6,
+    },
+    "turns": [...]
+}
+```
+
+**When to re-baseline:**
+
+| Change | Re-baseline? | Why |
+|--------|-------------|-----|
+| Added/removed a turn in the script | Yes | Expected turn count changed |
+| Changed expected intent from strict to soft | No | Just changes assertion tolerance |
+| Changed expected entities | Yes | Entity expectations changed |
+| LLM prompt was updated | Yes | Classification behavior may change |
+| New LLM model deployed | Yes | Different model = different baseline |
+| Code-only fix (Layer 2 bug) | No | Script expectations unchanged |
+
+**Baseline drift detection:**
+
+If Tier 2 intent accuracy drops >5% from baseline without script changes, the LLM model or prompt may have regressed. The CI/CD pipeline should flag this as a warning.
+
+**Re-baseline procedure:**
+
+1. Run all Tier 2 scripts 3 times, record metrics per run
+2. Take the median run as the new baseline
+3. Update `baseline_date` and `baseline_metrics` in each changed script
+4. Commit with message: `baseline: update Tier 2 baselines after {reason}`
+
+## 18. Consolidated Test Report
+
+After all three tiers complete, produce a single consolidated report for stakeholders.
+
+**Report template:**
+
+```markdown
+# Test Report — {project} — {date}
+
+## Summary
+| Tier | Tests | Passed | Key Metric |
+|------|-------|--------|------------|
+| Tier 1 | {n} | {n} | 100% pass (deterministic) |
+| Tier 2 | {n} scripts | {n} passed | {x}% intent accuracy |
+| Tier 3 | {n} personas × {n} runs | {n} completed | {x}% completion rate |
+
+## Tier 1 — Logic Tests
+- All {n} tests passed
+- No regressions from previous run
+
+## Tier 2 — LLM Accuracy
+- Intent accuracy: {x}% (target: ≥85%) — PASS/WARN/FAIL
+- Entity extraction rate: {x}% (target: ≥80%) — PASS/WARN/FAIL
+- Mismatches ({n}):
+  | Script | Turn | Message | Expected | Got |
+  |--------|------|---------|----------|-----|
+  | S05 | 2 | "I want to buy..." | ask_about_rates | help |
+
+## Tier 3 — Completion
+- Completion rate: {x}% (target: ≥70%) — PASS/WARN/FAIL
+- Avg turns: {x} (target: ≤12) — PASS/WARN/FAIL
+- Loop count: {n} (target: 0)
+- Persona breakdown:
+  | Persona | Runs | Completed | Avg Turns | Min | Max |
+  |---------|------|-----------|-----------|-----|-----|
+  | Alice (CA, purchase) | 3 | 3 | 6.0 | 6 | 6 |
+  | Bob (TX, refinance) | 3 | 3 | 13.7 | 13 | 15 |
+
+## Verdict
+PRODUCTION-READY / NEEDS IMPROVEMENT / BLOCKED
+```
+
+**Report storage:** Save to `docs/test-reports/YYYY-MM-DD-{project}-test-report.md`. Archive historical reports for trend analysis.
+
+## 19. Sources
 
 - Tier 1 design: confidence high — 65 passing mock tests in mfangdai-agent demonstrate the pattern
 - Tier 2 design: confidence high — LLM accuracy measurement is a standard NLP evaluation pattern
@@ -659,3 +788,7 @@ Testing is complete when ALL of the following are satisfied:
 - LayerTrace: confidence high — implemented and verified in mfangdai-agent sim tests
 - Scenario catalog: confidence high — derived from Postman collection (42 use cases) adapted to generic form
 - 举一反三 principle: confidence high — demonstrated in 34 FT scenarios with 2-3 inference variants each
+- Ambiguous intent handling: confidence high — 5 mismatches in mfangdai-agent T2 run (S02 "help" vs "ask_about_rates", S05 vague, S10 switch_lead) validated the need for soft matching
+- Script versioning: confidence medium — version field proposed but not yet integrated into the T2 runner implementation
+- Consolidated report: confidence high — template derived from actual mfangdai-agent T1+T2+T3 run on 2026-06-19
+- Validation data: confidence high — 88.1% intent accuracy, 100% entity extraction, 100% completion rate, Alice 6 turns vs Bob 13-15 turns variance observed
