@@ -314,7 +314,7 @@ components:
 ```
 NOT the old flat custom YAML format. States and transitions use `x-` extension prefix (valid OpenAPI 3.1).
 
-8. **MCP + A2A manifests.** Generate `config/mcp.yaml` (MCP tool manifest) and `config/a2a.yaml` (A2A agent card). Both `$ref` the domain model schemas — no schema duplication. MCP maps agent intents to MCP tools. A2A maps agent capabilities to A2A skills with orchestration support (serial/parallel sub-workflows).
+8. **A2A agent card.** Generate `config/a2a.yaml`. The agent's ONLY interface is natural language (A2A raw text). This is the core principle: the agent classifies intents, extracts entities, and routes workflows internally — callers just send raw messages. No MCP tools, no REST endpoints in the agent. MCP tools and REST APIs belong in the service layer, not the agent. The A2A card documents: agent identity, supported workflows with natural language triggers, entity schemas ($ref domain model), security config, and the single call method (`send_message`).
 
 9. **Tests.** Mock LLM responses with `unittest.mock`. Test the happy path through the complete workflow. Assert correct state transitions and field population.
 
