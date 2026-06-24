@@ -250,9 +250,11 @@ After the PRD is approved, generate a runnable Python project.
 ```
 {product-slug}/
 ├── config/
-│   ├── domain_model.yaml      # Entity + State + Transition definitions
+│   ├── domain_model.yaml      # Entity + State + Transition (OpenAPI 3.1, AD 29)
 │   ├── workflow.yaml            # Strategy selections, env config, tool registry
-│   └── intents.yaml             # Custom intent definitions
+│   ├── intents.yaml             # Custom intent definitions
+│   ├── mcp.yaml                 # MCP tool manifest ($ref domain_model schemas)
+│   └── a2a.yaml                 # A2A agent card + skills ($ref domain_model schemas)
 ├── src/
 │   ├── state_machine.py         # LangGraph StateGraph (auto-generated)
 │   ├── executors/
@@ -312,7 +314,9 @@ components:
 ```
 NOT the old flat custom YAML format. States and transitions use `x-` extension prefix (valid OpenAPI 3.1).
 
-8. **Tests.** Mock LLM responses with `unittest.mock`. Test the happy path through the complete workflow. Assert correct state transitions and field population.
+8. **MCP + A2A manifests.** Generate `config/mcp.yaml` (MCP tool manifest) and `config/a2a.yaml` (A2A agent card). Both `$ref` the domain model schemas — no schema duplication. MCP maps agent intents to MCP tools. A2A maps agent capabilities to A2A skills with orchestration support (serial/parallel sub-workflows).
+
+9. **Tests.** Mock LLM responses with `unittest.mock`. Test the happy path through the complete workflow. Assert correct state transitions and field population.
 
 ### File Size Enforcement
 
