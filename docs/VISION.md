@@ -238,7 +238,8 @@ docs/specs/
 ├── 2026-06-17-rate-limiting.md                              ← child of HLD
 ├── 2026-06-17-widget-templates.md                           ← child of HLD
 ├── 2026-06-18-rag-interface.md                           ← child of HLD
-└── 2026-06-18-agent-types.md                             ← child of HLD
+├── 2026-06-18-agent-types.md                             ← child of HLD
+└── 2026-06-19-three-tier-agent-testing-methodology.md     ← child of HLD
 
 docs/examples/home-insurance/
 ├── README.md
